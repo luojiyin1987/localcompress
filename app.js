@@ -58,6 +58,10 @@ const getFileKind = (file) => {
   return "";
 };
 
+const isOfficeKind = (kind) => kind === "pptx" || kind === "docx";
+
+const canProcessItem = (item) => item.kind === "pdf" ? state.engineReady : isOfficeKind(item.kind);
+
 const updateSummary = () => {
   const totalBytes = state.files.reduce((sum, item) => sum + item.file.size, 0);
   queueSummary.innerHTML = `
@@ -183,7 +187,8 @@ const renderFiles = () => {
   });
 
   updateSummary();
-  compressButton.disabled = state.isProcessing || state.files.length === 0 || !state.engineReady;
+  compressButton.disabled =
+    state.isProcessing || state.files.length === 0 || !state.files.some((item) => canProcessItem(item));
 };
 
 const createItem = (file) => ({
@@ -302,7 +307,20 @@ compressButton.addEventListener("click", async () => {
 
     revokeDownload(item);
     clearOutput(item);
-    const isOffice = item.kind === "pptx" || item.kind === "docx";
+    const isOffice = isOfficeKind(item.kind);
+
+    if (item.kind === "pdf" && !state.engineReady) {
+      markItem(item.id, {
+        statusLabel: "未完成",
+        tone: "error",
+        message: state.engineMessage || "PDF 压缩引擎未就绪。",
+        resultBytes: 0,
+        outputName: "",
+        downloadUrl: "",
+        outputBlob: null,
+      });
+      continue;
+    }
 
     markItem(item.id, {
       statusLabel: "压缩中",
