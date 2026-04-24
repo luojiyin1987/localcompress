@@ -202,9 +202,14 @@ const recompressImage = async (bytes, path, profile) => {
   }
 
   const settings = pptxProfiles[profile] ?? pptxProfiles.balanced;
-  const sourceMime = path.toLowerCase().endsWith(".png") ? "image/png" : "image/jpeg";
+  const isPng = path.toLowerCase().endsWith(".png");
+  const sourceMime = isPng ? "image/png" : "image/jpeg";
+
+  // 1. Decode to bitmap
   const imageBlob = new Blob([bytes], { type: sourceMime });
   const bitmap = await createImageBitmap(imageBlob);
+
+  // 2. Scale and draw to canvas
   const scale = Math.min(1, settings.maxDimension / Math.max(bitmap.width, bitmap.height));
   const width = Math.max(1, Math.round(bitmap.width * scale));
   const height = Math.max(1, Math.round(bitmap.height * scale));
@@ -216,18 +221,49 @@ const recompressImage = async (bytes, path, profile) => {
   context.drawImage(bitmap, 0, 0, width, height);
   bitmap.close?.();
 
-  const outputBlob = await canvas.convertToBlob({
-    type: "image/jpeg",
-    quality: settings.quality,
-  });
-  const output = new Uint8Array(await outputBlob.arrayBuffer());
+  // 3. Extract ImageData for WASM encoders
+  const imageData = context.getImageData(0, 0, width, height);
 
-  return output.byteLength < bytes.byteLength
-    ? {
-        bytes: output,
-        converted: sourceMime === "image/png",
-      }
-    : null;
+  // 4. Encode
+  if (isPng) {
+    // 4a. Try lossless PNG optimisation first
+    const { optimise: optimisePng } = await import("@jsquash/oxipng");
+    const pngBytes = await optimisePng(imageData, {
+      level: 2,
+      interlace: false,
+      optimiseAlpha: true,
+    });
+
+    if (pngBytes.byteLength < bytes.byteLength) {
+      return { bytes: pngBytes, converted: false };
+    }
+
+    // 4b. Fallback to MozJPEG if PNG is still too large
+    const { encode: encodeJpeg } = await import("@jsquash/jpeg");
+    const jpegBytes = await encodeJpeg(imageData, {
+      quality: Math.round(settings.quality * 100),
+      progressive: true,
+      optimize_coding: true,
+      trellis_multipass: true,
+    });
+
+    return jpegBytes.byteLength < bytes.byteLength
+      ? { bytes: jpegBytes, converted: true }
+      : null;
+  } else {
+    // JPEG re-encode with MozJPEG
+    const { encode: encodeJpeg } = await import("@jsquash/jpeg");
+    const jpegBytes = await encodeJpeg(imageData, {
+      quality: Math.round(settings.quality * 100),
+      progressive: true,
+      optimize_coding: true,
+      trellis_multipass: true,
+    });
+
+    return jpegBytes.byteLength < bytes.byteLength
+      ? { bytes: jpegBytes, converted: false }
+      : null;
+  }
 };
 
 const replaceZipTextReferences = async (zip, fromPath, toPath) => {

@@ -16,6 +16,8 @@
     "wrangler": "^4.42.1"
   },
   "dependencies": {
+    "@jsquash/jpeg": "^1.6.0",
+    "@jsquash/oxipng": "^2.3.0",
     "@neslinesli93/qpdf-wasm": "^0.3.0",
     "@okathira/ghostpdl-wasm": "^1.1.0",
     "jszip": "^3.10.1"
