@@ -285,6 +285,7 @@ const compressOffice = async ({ id, name, buffer, profile, kind }) => {
     (entry) => !entry.dir && isOfficeMediaImage(entry.name)
   );
   let optimizedImages = 0;
+  let hasPngToJpeg = false;
 
   for (const entry of imageEntries) {
     try {
@@ -301,7 +302,7 @@ const compressOffice = async ({ id, name, buffer, profile, kind }) => {
         if (newPath !== entry.name) {
           zip.remove(entry.name);
           await replaceZipTextReferences(zip, entry.name, newPath);
-          await ensureJpegContentType(zip);
+          hasPngToJpeg = true;
         }
         optimizedImages += 1;
       }
@@ -310,6 +311,10 @@ const compressOffice = async ({ id, name, buffer, profile, kind }) => {
         `${entry.name}: ${error instanceof Error ? error.message : "图片重压缩失败"}`
       );
     }
+  }
+
+  if (hasPngToJpeg) {
+    await ensureJpegContentType(zip);
   }
 
   const output = await zip.generateAsync({
