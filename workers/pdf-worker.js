@@ -211,6 +211,23 @@ const getAvailableJpegPath = (zip, path) => {
   return candidate;
 };
 
+const getBitmapImageData = (bitmap, width, height, flattenAlpha = false) => {
+  const canvas = new OffscreenCanvas(width, height);
+  const context = canvas.getContext("2d", { alpha: !flattenAlpha });
+
+  if (!context) {
+    throw new Error("浏览器无法创建图片处理上下文。");
+  }
+
+  if (flattenAlpha) {
+    context.fillStyle = "#fff";
+    context.fillRect(0, 0, width, height);
+  }
+
+  context.drawImage(bitmap, 0, 0, width, height);
+  return context.getImageData(0, 0, width, height);
+};
+
 const recompressImage = async (bytes, path, profile) => {
   if (!("createImageBitmap" in self) || !("OffscreenCanvas" in self)) {
     return null;
@@ -233,21 +250,43 @@ const recompressImage = async (bytes, path, profile) => {
   const width = Math.max(1, Math.round(bitmap.width * scale));
   const height = Math.max(1, Math.round(bitmap.height * scale));
 
-  const canvas = new OffscreenCanvas(width, height);
-  const context = canvas.getContext("2d", { alpha: false });
-  context.fillStyle = "#fff";
-  context.fillRect(0, 0, width, height);
-  context.drawImage(bitmap, 0, 0, width, height);
-  bitmap.close?.();
-
-  const imageData = context.getImageData(0, 0, width, height);
-
   // 3. Encode by strategy
-  if (isPng) {
-    // Strong: 直接转 JPEG，最小体积
-    if (settings.pngStrategy === "direct-jpeg") {
+  try {
+    if (isPng) {
+      // Strong: 直接转 JPEG，最小体积
+      if (settings.pngStrategy === "direct-jpeg") {
+        const { encode: encodeJpeg } = await import("@jsquash/jpeg");
+        const jpegBytes = await encodeJpeg(getBitmapImageData(bitmap, width, height, true), {
+          quality: settings.quality,
+          progressive: true,
+          optimize_coding: true,
+          trellis_multipass: true,
+        });
+        return jpegBytes.byteLength < bytes.byteLength
+          ? { bytes: jpegBytes, converted: true }
+          : null;
+      }
+
+      // Balanced / Archive: 先尝试 OxiPNG 无损优化，保留透明通道
+      const { optimise: optimisePng } = await import("@jsquash/oxipng");
+      const pngBytes = await optimisePng(getBitmapImageData(bitmap, width, height), {
+        level: 2,
+        interlace: false,
+        optimiseAlpha: true,
+      });
+
+      if (pngBytes.byteLength < bytes.byteLength) {
+        return { bytes: pngBytes, converted: false };
+      }
+
+      // Archive: 只保留无损优化，不转 JPEG
+      if (settings.pngStrategy === "oxipng-only") {
+        return null;
+      }
+
+      // Balanced: fallback 到 MozJPEG
       const { encode: encodeJpeg } = await import("@jsquash/jpeg");
-      const jpegBytes = await encodeJpeg(imageData, {
+      const jpegBytes = await encodeJpeg(getBitmapImageData(bitmap, width, height, true), {
         quality: settings.quality,
         progressive: true,
         optimize_coding: true,
@@ -258,47 +297,20 @@ const recompressImage = async (bytes, path, profile) => {
         : null;
     }
 
-    // Balanced / Archive: 先尝试 OxiPNG 无损优化
-    const { optimise: optimisePng } = await import("@jsquash/oxipng");
-    const pngBytes = await optimisePng(imageData, {
-      level: 2,
-      interlace: false,
-      optimiseAlpha: true,
-    });
-
-    if (pngBytes.byteLength < bytes.byteLength) {
-      return { bytes: pngBytes, converted: false };
-    }
-
-    // Archive: 只保留无损优化，不转 JPEG
-    if (settings.pngStrategy === "oxipng-only") {
-      return null;
-    }
-
-    // Balanced: fallback 到 MozJPEG
+    // JPEG re-encode with MozJPEG
     const { encode: encodeJpeg } = await import("@jsquash/jpeg");
-    const jpegBytes = await encodeJpeg(imageData, {
+    const jpegBytes = await encodeJpeg(getBitmapImageData(bitmap, width, height, true), {
       quality: settings.quality,
       progressive: true,
       optimize_coding: true,
       trellis_multipass: true,
     });
     return jpegBytes.byteLength < bytes.byteLength
-      ? { bytes: jpegBytes, converted: true }
+      ? { bytes: jpegBytes, converted: false }
       : null;
+  } finally {
+    bitmap.close?.();
   }
-
-  // JPEG re-encode with MozJPEG
-  const { encode: encodeJpeg } = await import("@jsquash/jpeg");
-  const jpegBytes = await encodeJpeg(imageData, {
-    quality: settings.quality,
-    progressive: true,
-    optimize_coding: true,
-    trellis_multipass: true,
-  });
-  return jpegBytes.byteLength < bytes.byteLength
-    ? { bytes: jpegBytes, converted: false }
-    : null;
 };
 
 const replaceZipTextReferences = async (zip, fromPath, toPath) => {
