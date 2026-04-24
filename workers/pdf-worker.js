@@ -228,6 +228,84 @@ const getBitmapImageData = (bitmap, width, height, flattenAlpha = false) => {
   return context.getImageData(0, 0, width, height);
 };
 
+const decodeZipPath = (path) => {
+  try {
+    return decodeURIComponent(path);
+  } catch {
+    return path;
+  }
+};
+
+const normalizeZipPath = (path) => {
+  const parts = [];
+
+  decodeZipPath(path).split("/").forEach((part) => {
+    if (!part || part === ".") {
+      return;
+    }
+
+    if (part === "..") {
+      parts.pop();
+      return;
+    }
+
+    parts.push(part);
+  });
+
+  return parts.join("/");
+};
+
+const getRelationshipSourceDir = (relsPath) => {
+  const marker = "/_rels/";
+  const markerIndex = relsPath.indexOf(marker);
+
+  if (markerIndex === -1 || !relsPath.endsWith(".rels")) {
+    return "";
+  }
+
+  const ownerDir = relsPath.slice(0, markerIndex);
+  const sourceName = relsPath.slice(markerIndex + marker.length, -".rels".length);
+  const sourcePath = ownerDir ? `${ownerDir}/${sourceName}` : sourceName;
+  const slashIndex = sourcePath.lastIndexOf("/");
+  return slashIndex === -1 ? "" : sourcePath.slice(0, slashIndex);
+};
+
+const resolveRelationshipTarget = (relsPath, target) => {
+  if (/^[a-z][a-z0-9+.-]*:/i.test(target) || target.startsWith("/")) {
+    return "";
+  }
+
+  const sourceDir = getRelationshipSourceDir(relsPath);
+  return normalizeZipPath(sourceDir ? `${sourceDir}/${target}` : target);
+};
+
+const buildRelativeZipPath = (fromDir, toPath) => {
+  const fromParts = normalizeZipPath(fromDir).split("/").filter(Boolean);
+  const toParts = normalizeZipPath(toPath).split("/").filter(Boolean);
+
+  while (fromParts.length > 0 && toParts.length > 0 && fromParts[0] === toParts[0]) {
+    fromParts.shift();
+    toParts.shift();
+  }
+
+  return [...fromParts.map(() => ".."), ...toParts].join("/");
+};
+
+const escapeXmlAttribute = (value) =>
+  value
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+
+const unescapeXmlAttribute = (value) =>
+  value
+    .replace(/&quot;/g, "\"")
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+
 const recompressImage = async (bytes, path, profile) => {
   if (!("createImageBitmap" in self) || !("OffscreenCanvas" in self)) {
     return null;
@@ -314,28 +392,25 @@ const recompressImage = async (bytes, path, profile) => {
 };
 
 const replaceZipTextReferences = async (zip, fromPath, toPath) => {
-  const replacements = [
-    [fromPath, toPath],
-    [fromPath.split("/").pop(), toPath.split("/").pop()],
-  ];
   const textEntries = Object.values(zip.files).filter(
-    (entry) =>
-      !entry.dir &&
-      /\.(xml|rels)$/i.test(entry.name) &&
-      !/^(ppt|word)\/media\//i.test(entry.name)
+    (entry) => !entry.dir && /\.rels$/i.test(entry.name)
   );
 
   await Promise.all(
     textEntries.map(async (entry) => {
       const original = await entry.async("string");
-      let updated = original;
+      const sourceDir = getRelationshipSourceDir(entry.name);
+      const updated = original.replace(
+        /\bTarget=(["'])([^"']+)\1/g,
+        (match, quote, target) => {
+          if (resolveRelationshipTarget(entry.name, unescapeXmlAttribute(target)) !== normalizeZipPath(fromPath)) {
+            return match;
+          }
 
-      const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-      replacements.forEach(([from, to]) => {
-        const re = new RegExp(escapeRegExp(from) + "\\b", "g");
-        updated = updated.replace(re, to);
-      });
+          const relativeTarget = buildRelativeZipPath(sourceDir, toPath);
+          return `Target=${quote}${escapeXmlAttribute(relativeTarget)}${quote}`;
+        }
+      );
 
       if (updated !== original) {
         zip.file(entry.name, updated);
