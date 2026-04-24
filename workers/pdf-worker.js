@@ -80,7 +80,12 @@ const getModule = async () => {
     });
   }
 
-  return ghostscriptModulePromise;
+  try {
+    return await ghostscriptModulePromise;
+  } catch (error) {
+    ghostscriptModulePromise = null;
+    throw error;
+  }
 };
 
 const getQpdfModule = async () => {
@@ -92,7 +97,12 @@ const getQpdfModule = async () => {
     });
   }
 
-  return qpdfModulePromise;
+  try {
+    return await qpdfModulePromise;
+  } catch (error) {
+    qpdfModulePromise = null;
+    throw error;
+  }
 };
 
 const removeFile = (fs, path) => {
