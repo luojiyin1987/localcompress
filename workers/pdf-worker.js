@@ -2,11 +2,18 @@ import loadGhostscript from "@okathira/ghostpdl-wasm";
 import ghostscriptWasmUrl from "@okathira/ghostpdl-wasm/gs.wasm?url";
 import loadQpdf from "@neslinesli93/qpdf-wasm";
 import qpdfWasmUrl from "@neslinesli93/qpdf-wasm/dist/qpdf.wasm?url";
+import JSZip from "jszip";
 
 const profiles = {
   balanced: "/ebook",
   strong: "/screen",
   archive: "/printer",
+};
+
+const pptxProfiles = {
+  balanced: { quality: 0.62, maxDimension: 1600 },
+  strong: { quality: 0.42, maxDimension: 1280 },
+  archive: { quality: 0.78, maxDimension: 2200 },
 };
 
 let ghostscriptModulePromise;
@@ -17,7 +24,7 @@ self.postMessage({
   type: "engine-status",
   ready: false,
   loading: true,
-  message: "Ghostscript WASM 加载中",
+  message: "压缩引擎加载中",
 });
 
 const postEngineStatus = (ready, message, loading = false) => {
@@ -72,6 +79,11 @@ const toTransferableBuffer = (bytes) => {
 const buildOutputName = (name, profile, optimizeStructure) => {
   const baseName = name.replace(/\.pdf$/i, "");
   return `${baseName}.${profile}${optimizeStructure ? ".qpdf" : ""}.pdf`;
+};
+
+const buildPptxOutputName = (name, profile) => {
+  const baseName = name.replace(/\.pptx$/i, "");
+  return `${baseName}.${profile}.pptx`;
 };
 
 const optimizePdfStructure = async ({ id, buffer }) => {
@@ -157,6 +169,163 @@ const compressPdf = async ({ id, name, buffer, profile, optimizeStructure }) => 
   };
 };
 
+const isPptxMediaImage = (path) =>
+  /^ppt\/media\/.+\.(png|jpe?g)$/i.test(path);
+
+const getJpegPath = (path) => path.replace(/\.(png|jpe?g)$/i, ".jpg");
+
+const getAvailableJpegPath = (zip, path) => {
+  const preferredPath = getJpegPath(path);
+
+  if (preferredPath === path || !zip.file(preferredPath)) {
+    return preferredPath;
+  }
+
+  const dotIndex = preferredPath.lastIndexOf(".");
+  const baseName = preferredPath.slice(0, dotIndex);
+  const extension = preferredPath.slice(dotIndex);
+  let index = 1;
+  let candidate = `${baseName}-${index}${extension}`;
+
+  while (zip.file(candidate)) {
+    index += 1;
+    candidate = `${baseName}-${index}${extension}`;
+  }
+
+  return candidate;
+};
+
+const recompressImage = async (bytes, path, profile) => {
+  if (!("createImageBitmap" in self) || !("OffscreenCanvas" in self)) {
+    return null;
+  }
+
+  const settings = pptxProfiles[profile] ?? pptxProfiles.balanced;
+  const sourceMime = path.toLowerCase().endsWith(".png") ? "image/png" : "image/jpeg";
+  const imageBlob = new Blob([bytes], { type: sourceMime });
+  const bitmap = await createImageBitmap(imageBlob);
+  const scale = Math.min(1, settings.maxDimension / Math.max(bitmap.width, bitmap.height));
+  const width = Math.max(1, Math.round(bitmap.width * scale));
+  const height = Math.max(1, Math.round(bitmap.height * scale));
+  const canvas = new OffscreenCanvas(width, height);
+  const context = canvas.getContext("2d", { alpha: false });
+
+  context.fillStyle = "#fff";
+  context.fillRect(0, 0, width, height);
+  context.drawImage(bitmap, 0, 0, width, height);
+  bitmap.close?.();
+
+  const outputBlob = await canvas.convertToBlob({
+    type: "image/jpeg",
+    quality: settings.quality,
+  });
+  const output = new Uint8Array(await outputBlob.arrayBuffer());
+
+  return output.byteLength < bytes.byteLength
+    ? {
+        bytes: output,
+        converted: sourceMime === "image/png",
+      }
+    : null;
+};
+
+const replaceZipTextReferences = async (zip, fromPath, toPath) => {
+  const replacements = [
+    [fromPath, toPath],
+    [fromPath.split("/").pop(), toPath.split("/").pop()],
+  ];
+  const textEntries = Object.values(zip.files).filter(
+    (entry) =>
+      !entry.dir &&
+      /\.(xml|rels)$/i.test(entry.name) &&
+      !entry.name.startsWith("ppt/media/")
+  );
+
+  await Promise.all(
+    textEntries.map(async (entry) => {
+      const original = await entry.async("string");
+      let updated = original;
+
+      replacements.forEach(([from, to]) => {
+        updated = updated.split(from).join(to);
+      });
+
+      if (updated !== original) {
+        zip.file(entry.name, updated);
+      }
+    })
+  );
+};
+
+const ensureJpegContentType = async (zip) => {
+  const contentTypes = zip.file("[Content_Types].xml");
+  if (!contentTypes) {
+    return;
+  }
+
+  const original = await contentTypes.async("string");
+  if (/Extension="jpe?g"/i.test(original)) {
+    return;
+  }
+
+  const updated = original.replace(
+    "</Types>",
+    '<Default Extension="jpg" ContentType="image/jpeg"/></Types>'
+  );
+  zip.file("[Content_Types].xml", updated);
+};
+
+const compressPptx = async ({ id, name, buffer, profile }) => {
+  const zip = await JSZip.loadAsync(buffer);
+  const imageEntries = Object.values(zip.files).filter(
+    (entry) => !entry.dir && isPptxMediaImage(entry.name)
+  );
+  let optimizedImages = 0;
+
+  for (const entry of imageEntries) {
+    try {
+      const original = await entry.async("uint8array");
+      const recompressed = await recompressImage(original, entry.name, profile);
+
+      if (recompressed) {
+        const newPath = recompressed.converted ? getAvailableJpegPath(zip, entry.name) : entry.name;
+        zip.file(newPath, recompressed.bytes, {
+          binary: true,
+          compression: "DEFLATE",
+          compressionOptions: { level: 9 },
+        });
+        if (newPath !== entry.name) {
+          zip.remove(entry.name);
+          await replaceZipTextReferences(zip, entry.name, newPath);
+          await ensureJpegContentType(zip);
+        }
+        optimizedImages += 1;
+      }
+    } catch (error) {
+      activeLogs?.push(
+        `${entry.name}: ${error instanceof Error ? error.message : "图片重压缩失败"}`
+      );
+    }
+  }
+
+  const output = await zip.generateAsync({
+    type: "uint8array",
+    compression: "DEFLATE",
+    compressionOptions: { level: 9 },
+  });
+
+  return {
+    ok: true,
+    id,
+    buffer: toTransferableBuffer(output),
+    outputName: buildPptxOutputName(name, profile),
+    message:
+      optimizedImages > 0
+        ? `PPTX 压缩完成，已重压缩 ${optimizedImages}/${imageEntries.length} 张图片。`
+        : `PPTX 已重新打包，${imageEntries.length} 张图片未产生更小版本。`,
+  };
+};
+
 self.addEventListener("message", async (event) => {
   const message = event.data;
 
@@ -173,7 +342,7 @@ self.addEventListener("message", async (event) => {
     return;
   }
 
-  if (message.type !== "compress-pdf") {
+  if (message.type !== "compress-pdf" && message.type !== "compress-pptx") {
     return;
   }
 
@@ -184,13 +353,15 @@ self.addEventListener("message", async (event) => {
   }
 
   try {
-    const result = await compressPdf(message);
+    activeLogs = [];
+    const result =
+      message.type === "compress-pptx" ? await compressPptx(message) : await compressPdf(message);
     port.postMessage(result, result.ok ? [result.buffer] : []);
   } catch (error) {
     port.postMessage({
       ok: false,
       id: message.id,
-      error: error instanceof Error ? error.message : "PDF Worker 执行失败。",
+      error: error instanceof Error ? error.message : "压缩 Worker 执行失败。",
     });
   } finally {
     activeLogs = null;

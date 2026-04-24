@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@neslinesli93/qpdf-wasm": "^0.3.0",
-    "@okathira/ghostpdl-wasm": "^1.1.0"
+    "@okathira/ghostpdl-wasm": "^1.1.0",
+    "jszip": "^3.10.1"
   }
 }

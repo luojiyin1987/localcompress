@@ -381,9 +381,17 @@ select {
 }
 
 .download-link {
+  border: 0;
+  padding: 0;
+  background: transparent;
   color: var(--brand-dark);
+  cursor: pointer;
   font-weight: 700;
   text-decoration: none;
+}
+
+.download-link:hover {
+  text-decoration: underline;
 }
 
 .future-list {

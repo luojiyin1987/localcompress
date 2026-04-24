@@ -1,10 +1,12 @@
 const worker = new Worker(new URL("./workers/pdf-worker.js", import.meta.url), { type: "module" });
 
+const pptxMime = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+
 const state = {
   files: [],
   isProcessing: false,
   engineReady: false,
-  engineMessage: "Ghostscript WASM 加载中",
+  engineMessage: "压缩引擎加载中",
 };
 
 const dropzone = document.querySelector("#dropzone");
@@ -33,6 +35,20 @@ const setEngineStatus = (label, tone = "") => {
   engineStatus.className = `status-chip${tone ? ` ${tone}` : ""}`;
 };
 
+const getFileKind = (file) => {
+  const name = file.name.toLowerCase();
+
+  if (file.type === "application/pdf" || name.endsWith(".pdf")) {
+    return "pdf";
+  }
+
+  if (file.type === pptxMime || name.endsWith(".pptx")) {
+    return "pptx";
+  }
+
+  return "";
+};
+
 const updateSummary = () => {
   const totalBytes = state.files.reduce((sum, item) => sum + item.file.size, 0);
   queueSummary.innerHTML = `
@@ -48,13 +64,73 @@ const revokeDownload = (item) => {
   }
 };
 
+const clearOutput = (item) => {
+  revokeDownload(item);
+  item.outputBlob = null;
+  item.outputName = "";
+  item.resultBytes = 0;
+};
+
+const getPickerTypes = (item) => {
+  if (item.kind === "pptx") {
+    return [
+      {
+        description: "PowerPoint Presentation",
+        accept: {
+          [pptxMime]: [".pptx"],
+        },
+      },
+    ];
+  }
+
+  return [
+    {
+      description: "PDF Document",
+      accept: {
+        "application/pdf": [".pdf"],
+      },
+    },
+  ];
+};
+
+const fallbackDownload = (blob, filename) => {
+  const downloadUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = downloadUrl;
+  anchor.download = filename;
+  anchor.rel = "noopener";
+  anchor.style.display = "none";
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+
+  window.setTimeout(() => {
+    URL.revokeObjectURL(downloadUrl);
+  }, 10 * 60 * 1000);
+};
+
+const saveBlob = async (item) => {
+  if (!("showSaveFilePicker" in window)) {
+    fallbackDownload(item.outputBlob, item.outputName);
+    return;
+  }
+
+  const handle = await window.showSaveFilePicker({
+    suggestedName: item.outputName,
+    types: getPickerTypes(item),
+  });
+  const writable = await handle.createWritable();
+  await writable.write(item.outputBlob);
+  await writable.close();
+};
+
 const renderFiles = () => {
   fileList.textContent = "";
 
   if (state.files.length === 0) {
     const emptyRow = document.createElement("li");
     emptyRow.className = "empty-row";
-    emptyRow.textContent = "队列为空。当前只接受 PDF 文件，支持一次加入多个文件。";
+    emptyRow.textContent = "队列为空。当前接受 PDF 和 PPTX 文件，支持一次加入多个文件。";
     fileList.appendChild(emptyRow);
   }
 
@@ -76,11 +152,10 @@ const renderFiles = () => {
     badge.className = `file-badge ${item.tone}`;
     message.textContent = item.message;
 
-    if (item.downloadUrl) {
+    if (item.tone === "success" && item.outputBlob) {
       download.hidden = false;
-      download.href = item.downloadUrl;
-      download.download = item.outputName;
-      download.textContent = "下载";
+      download.dataset.fileId = item.id;
+      download.textContent = "下载文件";
     }
 
     row.dataset.fileId = item.id;
@@ -94,30 +169,34 @@ const renderFiles = () => {
 const createItem = (file) => ({
   id: crypto.randomUUID(),
   file,
+  kind: getFileKind(file),
   statusLabel: "待处理",
   tone: "",
   message: "已加入队列，等待开始。",
   downloadUrl: "",
+  outputBlob: null,
   outputName: "",
   resultBytes: 0,
 });
 
 const addFiles = (incomingFiles) => {
-  const pdfFiles = incomingFiles.filter((file) => file.type === "application/pdf");
-  const rejectedCount = incomingFiles.length - pdfFiles.length;
+  const supportedFiles = incomingFiles.filter((file) => getFileKind(file));
+  const rejectedCount = incomingFiles.length - supportedFiles.length;
 
-  pdfFiles.forEach((file) => {
+  supportedFiles.forEach((file) => {
     state.files.push(createItem(file));
   });
 
   if (rejectedCount > 0) {
     state.files.push({
       id: crypto.randomUUID(),
-      file: new File([""], `${rejectedCount} 个非 PDF 文件`, { type: "text/plain" }),
+      file: new File([""], `${rejectedCount} 个不支持的文件`, { type: "text/plain" }),
+      kind: "",
       statusLabel: "已忽略",
       tone: "error",
-      message: "当前 MVP 只接收 PDF 文件。",
+      message: "当前只接收 PDF 和 PPTX 文件。",
       downloadUrl: "",
+      outputBlob: null,
       outputName: "",
       resultBytes: 0,
     });
@@ -185,7 +264,7 @@ const compressFile = (item, profile, optimizeStructure) =>
       .then((buffer) => {
         worker.postMessage(
           {
-            type: "compress-pdf",
+            type: item.kind === "pptx" ? "compress-pptx" : "compress-pdf",
             id: item.id,
             name: item.file.name,
             buffer,
@@ -212,45 +291,93 @@ compressButton.addEventListener("click", async () => {
   const optimizeStructure = structureToggle.checked;
 
   for (const item of state.files) {
-    if (item.file.type !== "application/pdf") {
+    if (!item.kind) {
       continue;
     }
 
     revokeDownload(item);
+    clearOutput(item);
+    const isPptx = item.kind === "pptx";
+
     markItem(item.id, {
       statusLabel: "压缩中",
       tone: "processing",
-      message: optimizeStructure
-        ? `Ghostscript 压缩后将执行 QPDF 结构优化，使用 ${profile} 档位。`
-        : `Ghostscript WASM 正在处理，使用 ${profile} 档位。`,
+      message: isPptx
+        ? `JSZip 正在解包 PPTX，并按 ${profile} 档位重压缩图片。`
+        : optimizeStructure
+          ? `Ghostscript 压缩后将执行 QPDF 结构优化，使用 ${profile} 档位。`
+          : `Ghostscript WASM 正在处理，使用 ${profile} 档位。`,
       resultBytes: 0,
       outputName: "",
+      downloadUrl: "",
+      outputBlob: null,
     });
 
-    const result = await compressFile(item, profile, optimizeStructure);
+    const result = await compressFile(item, profile, !isPptx && optimizeStructure);
 
     if (!result.ok) {
       markItem(item.id, {
         statusLabel: "未完成",
         tone: "error",
         message: result.error,
+        resultBytes: 0,
+        outputName: "",
+        downloadUrl: "",
+        outputBlob: null,
       });
       continue;
     }
 
-    const blob = new Blob([result.buffer], { type: "application/pdf" });
+    const blob = new Blob([result.buffer], {
+      type: isPptx ? pptxMime : "application/pdf",
+    });
     markItem(item.id, {
       statusLabel: "已完成",
       tone: "success",
       message: result.message,
       resultBytes: blob.size,
       outputName: result.outputName,
-      downloadUrl: URL.createObjectURL(blob),
+      outputBlob: blob,
     });
   }
 
   state.isProcessing = false;
   renderFiles();
+});
+
+fileList.addEventListener("click", async (event) => {
+  const link = event.target.closest(".download-link");
+  if (!link) {
+    return;
+  }
+
+  const item = state.files.find((entry) => entry.id === link.dataset.fileId);
+  if (!item?.outputBlob || item.tone !== "success") {
+    return;
+  }
+
+  const previousMessage = item.message;
+  markItem(item.id, {
+    message: "正在写入下载文件...",
+  });
+
+  try {
+    await saveBlob(item);
+    markItem(item.id, {
+      message: "文件已保存到本地。",
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      markItem(item.id, {
+        message: previousMessage,
+      });
+      return;
+    }
+
+    markItem(item.id, {
+      message: `保存失败：${error instanceof Error ? error.message : "浏览器拒绝写入文件。"}`,
+    });
+  }
 });
 
 worker.addEventListener("message", (event) => {

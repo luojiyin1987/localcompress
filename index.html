@@ -6,7 +6,7 @@
     <title>Paper Squeeze</title>
     <meta
       name="description"
-      content="Cloudflare Pages 静态站。浏览器内使用 Web Worker + WASM 本地压缩 PDF，文件全程不上传。"
+      content="Cloudflare Pages 静态站。浏览器内使用 Web Worker + WASM/JSZip 本地压缩 PDF 和 PPTX，文件全程不上传。"
     />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -21,16 +21,17 @@
       <header class="hero">
         <div class="hero-copy">
           <p class="eyebrow">Cloudflare Pages / Local-Only Compression</p>
-          <h1>先把 PDF 压缩做清楚，其他格式后排。</h1>
+          <h1>PDF 和 PPTX 都在浏览器本地压缩。</h1>
           <p class="hero-text">
-            浏览器直接读取文件，压缩流程放进 Web Worker，并由 Ghostscript WASM 在本地执行。
-            MVP 阶段首页只显示 PDF 压缩，避免入口分散。
+            浏览器直接读取文件，压缩流程放进 Web Worker。PDF 由 Ghostscript/QPDF WASM 处理，
+            PPTX 由 JSZip 解包并重压缩内嵌图片。
           </p>
           <div class="hero-pills">
             <span>文档不上传</span>
             <span>批量队列</span>
             <span>Worker 隔离</span>
             <span>QPDF 优化</span>
+            <span>PPTX 图片重压缩</span>
           </div>
         </div>
 
@@ -41,9 +42,10 @@
             <li>Web Worker 接管任务</li>
             <li>Ghostscript WASM 压缩</li>
             <li>QPDF WASM 结构优化</li>
+            <li>JSZip 重写 PPTX 图片</li>
             <li>浏览器生成下载文件</li>
           </ol>
-          <p class="panel-footnote">当前版本已接入 Ghostscript WASM 与 QPDF WASM，压缩与结构重写都在本地完成。</p>
+          <p class="panel-footnote">当前版本已接入 PDF 压缩、PDF 结构优化和 PPTX 图片重压缩。</p>
         </aside>
       </header>
 
@@ -51,15 +53,21 @@
         <section class="tool-card tool-card-primary">
           <div class="section-head">
             <div>
-              <p class="section-kicker">MVP / PDF Only</p>
-              <h2>PDF 压缩</h2>
+              <p class="section-kicker">Local Compression</p>
+              <h2>PDF / PPTX 压缩</h2>
             </div>
             <span class="status-chip" id="engine-status">检测引擎中</span>
           </div>
 
-          <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="选择 PDF 文件">
-            <input id="file-input" type="file" accept="application/pdf" multiple hidden />
-            <p class="dropzone-title">拖入 PDF，或点这里选择文件</p>
+          <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="选择 PDF 或 PPTX 文件">
+            <input
+              id="file-input"
+              type="file"
+              accept="application/pdf,.pdf,application/vnd.openxmlformats-officedocument.presentationml.presentation,.pptx"
+              multiple
+              hidden
+            />
+            <p class="dropzone-title">拖入 PDF / PPTX，或点这里选择文件</p>
             <p class="dropzone-subtitle">支持批量加入队列。文件只在当前浏览器内处理。</p>
           </div>
 
@@ -67,9 +75,9 @@
             <label class="field">
               <span>压缩档位</span>
               <select id="profile-select">
-                <option value="balanced">Balanced</option>
-                <option value="strong">Strong</option>
-                <option value="archive">Archive</option>
+                <option value="balanced">Balanced - 推荐</option>
+                <option value="strong">Strong - 更小文件</option>
+                <option value="archive">Archive - 保留清晰度</option>
               </select>
             </label>
 
@@ -104,7 +112,7 @@
               <strong>PDF 压缩</strong>
               <p>首屏主功能，已接入批量队列、Ghostscript WASM 和 QPDF WASM。</p>
             </article>
-            <article class="future-item">
+            <article class="future-item active">
               <strong>PPTX 压缩</strong>
               <p>JSZip 解包 + 图片重压缩，再回写 ZIP。</p>
             </article>
@@ -121,7 +129,7 @@
           <div class="privacy-note">
             <p class="privacy-title">本地处理说明</p>
             <p>
-              这个版本不会把文件上传到服务器。Ghostscript 和 QPDF 都在浏览器端的 Worker 中运行。
+              这个版本不会把文件上传到服务器。PDF 引擎和 PPTX 图片处理都在浏览器端 Worker 中运行。
             </p>
           </div>
         </section>
@@ -137,7 +145,7 @@
         <div class="file-state">
           <span class="file-badge"></span>
           <span class="file-message"></span>
-          <a class="download-link" hidden>下载</a>
+          <button class="download-link" type="button" hidden>下载</button>
         </div>
       </li>
     </template>
