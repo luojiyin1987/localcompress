@@ -447,22 +447,44 @@ const replaceZipTextReferences = async (zip, fromPath, toPath) => {
   }
 };
 
-const ensureJpegContentType = async (zip) => {
+const removeContentTypeOverrides = (xml, removedPaths) => {
+  const removedPartPaths = new Set(removedPaths.map((path) => normalizeZipPath(path)));
+
+  if (removedPartPaths.size === 0) {
+    return xml;
+  }
+
+  return xml.replace(/<Override\b[^>]*>(?:\s*<\/Override>)?/gi, (tag) => {
+    const partNameMatch = tag.match(/\bPartName=(["'])([^"']+)\1/i);
+
+    if (!partNameMatch) {
+      return tag;
+    }
+
+    const partPath = normalizeZipPath(unescapeXmlAttribute(partNameMatch[2]).replace(/^\/+/, ""));
+    return removedPartPaths.has(partPath) ? "" : tag;
+  });
+};
+
+const ensureJpegContentType = async (zip, removedPaths = []) => {
   const contentTypes = zip.file("[Content_Types].xml");
   if (!contentTypes) {
     return;
   }
 
   const original = await contentTypes.async("string");
-  if (/Extension="jpg"/i.test(original)) {
-    return;
+  let updated = removeContentTypeOverrides(original, removedPaths);
+
+  if (!/Extension="jpg"/i.test(updated)) {
+    updated = updated.replace(
+      "</Types>",
+      '<Default Extension="jpg" ContentType="image/jpeg"/></Types>'
+    );
   }
 
-  const updated = original.replace(
-    "</Types>",
-    '<Default Extension="jpg" ContentType="image/jpeg"/></Types>'
-  );
-  zip.file("[Content_Types].xml", updated);
+  if (updated !== original) {
+    zip.file("[Content_Types].xml", updated);
+  }
 };
 
 const compressOffice = async ({ id, name, buffer, profile, kind }) => {
@@ -472,6 +494,7 @@ const compressOffice = async ({ id, name, buffer, profile, kind }) => {
   );
   let optimizedImages = 0;
   let hasPngToJpeg = false;
+  const removedImagePaths = [];
 
   for (const entry of imageEntries) {
     try {
@@ -489,6 +512,7 @@ const compressOffice = async ({ id, name, buffer, profile, kind }) => {
           zip.remove(entry.name);
           await replaceZipTextReferences(zip, entry.name, newPath);
           hasPngToJpeg = true;
+          removedImagePaths.push(entry.name);
         }
         optimizedImages += 1;
       }
@@ -500,7 +524,7 @@ const compressOffice = async ({ id, name, buffer, profile, kind }) => {
   }
 
   if (hasPngToJpeg) {
-    await ensureJpegContentType(zip);
+    await ensureJpegContentType(zip, removedImagePaths);
   }
 
   const output = await zip.generateAsync({
