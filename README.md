@@ -9,11 +9,11 @@
 | 格式 | 压缩方式 |
 |---|---|
 | PDF | Ghostscript WASM 重压缩，可选 QPDF WASM 结构优化 |
-| PPTX | JSZip 解包 + OffscreenCanvas 图片重压缩后回写 |
-| DOCX | JSZip 解包 + OffscreenCanvas 图片重压缩后回写 |
+| PPTX | JSZip 解包 + jSquash 图片重压缩（OxiPNG / MozJPEG）后回写 |
+| DOCX | JSZip 解包 + jSquash 图片重压缩（OxiPNG / MozJPEG）后回写 |
 
 - **批量队列**：一次拖入多个文件，按顺序处理
-- **三档压缩**：Balanced（推荐）、Strong（更小文件）、Archive（保留清晰度）
+- **三档压缩**：均衡 / 强力 / 原图，不同档位对应不同的图片编码策略
 - **Worker 隔离**：压缩任务在 Web Worker 中运行，不阻塞主线程
 - **File System Access API**：支持直接保存到本地目录（浏览器支持时）
 
@@ -23,6 +23,8 @@
 - [Cloudflare Pages](https://pages.cloudflare.com/) — 静态托管
 - [@okathira/ghostpdl-wasm](https://www.npmjs.com/package/@okathira/ghostpdl-wasm) — Ghostscript WASM
 - [@neslinesli93/qpdf-wasm](https://www.npmjs.com/package/@neslinesli93/qpdf-wasm) — QPDF WASM
+- [@jsquash/jpeg](https://www.npmjs.com/package/@jsquash/jpeg) — MozJPEG WASM 编码
+- [@jsquash/oxipng](https://www.npmjs.com/package/@jsquash/oxipng) — OxiPNG WASM 无损优化
 - [JSZip](https://stuk.github.io/jszip/) — Office 文档解包
 
 ## 快速开始
