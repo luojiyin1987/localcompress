@@ -111,7 +111,7 @@ const optimizePdfStructure = async ({ id, buffer }) => {
     throw new Error(lastLog || `QPDF 退出码 ${exitCode}`);
   }
 
-  const output = qpdf.FS.readFile(outputPath);
+  const output = qpdf.FS.readFile(outputPath, { encoding: "binary" });
   removeFile(qpdf.FS, inputPath);
   removeFile(qpdf.FS, outputPath);
   return toTransferableBuffer(output);
