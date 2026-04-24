@@ -247,8 +247,11 @@ const replaceZipTextReferences = async (zip, fromPath, toPath) => {
       const original = await entry.async("string");
       let updated = original;
 
+      const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
       replacements.forEach(([from, to]) => {
-        updated = updated.split(from).join(to);
+        const re = new RegExp(escapeRegExp(from) + "\\b", "g");
+        updated = updated.replace(re, to);
       });
 
       if (updated !== original) {
