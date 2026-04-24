@@ -128,14 +128,14 @@ const fallbackDownload = (blob, filename) => {
   anchor.click();
   anchor.remove();
 
-  window.setTimeout(() => {
-    URL.revokeObjectURL(downloadUrl);
-  }, 10 * 60 * 1000);
+  return downloadUrl;
 };
 
 const saveBlob = async (item) => {
+  revokeDownload(item);
+
   if (!("showSaveFilePicker" in window)) {
-    fallbackDownload(item.outputBlob, item.outputName);
+    item.downloadUrl = fallbackDownload(item.outputBlob, item.outputName);
     return;
   }
 
