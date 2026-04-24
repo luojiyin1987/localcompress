@@ -4,6 +4,26 @@ import loadQpdf from "@neslinesli93/qpdf-wasm";
 import qpdfWasmUrl from "@neslinesli93/qpdf-wasm/dist/qpdf.wasm?url";
 import JSZip from "jszip";
 
+let jpegModulePromise;
+const getJpegEncoder = async () => {
+  if (!jpegModulePromise) {
+    jpegModulePromise = import("@jsquash/jpeg");
+  }
+
+  const { encode } = await jpegModulePromise;
+  return encode;
+};
+
+let oxipngModulePromise;
+const getOxipngEncoder = async () => {
+  if (!oxipngModulePromise) {
+    oxipngModulePromise = import("@jsquash/oxipng");
+  }
+
+  const { optimise } = await oxipngModulePromise;
+  return optimise;
+};
+
 const profiles = {
   balanced: "/ebook",
   strong: "/screen",
@@ -333,7 +353,7 @@ const recompressImage = async (bytes, path, profile) => {
     if (isPng) {
       // Strong: 直接转 JPEG，最小体积
       if (settings.pngStrategy === "direct-jpeg") {
-        const { encode: encodeJpeg } = await import("@jsquash/jpeg");
+        const encodeJpeg = await getJpegEncoder();
         const jpegBytes = await encodeJpeg(getBitmapImageData(bitmap, width, height, true), {
           quality: settings.quality,
           progressive: true,
@@ -346,7 +366,7 @@ const recompressImage = async (bytes, path, profile) => {
       }
 
       // Balanced / Archive: 先尝试 OxiPNG 无损优化，保留透明通道
-      const { optimise: optimisePng } = await import("@jsquash/oxipng");
+      const optimisePng = await getOxipngEncoder();
       const pngBytes = await optimisePng(getBitmapImageData(bitmap, width, height), {
         level: 2,
         interlace: false,
@@ -363,7 +383,7 @@ const recompressImage = async (bytes, path, profile) => {
       }
 
       // Balanced: fallback 到 MozJPEG
-      const { encode: encodeJpeg } = await import("@jsquash/jpeg");
+      const encodeJpeg = await getJpegEncoder();
       const jpegBytes = await encodeJpeg(getBitmapImageData(bitmap, width, height, true), {
         quality: settings.quality,
         progressive: true,
@@ -376,7 +396,7 @@ const recompressImage = async (bytes, path, profile) => {
     }
 
     // JPEG re-encode with MozJPEG
-    const { encode: encodeJpeg } = await import("@jsquash/jpeg");
+    const encodeJpeg = await getJpegEncoder();
     const jpegBytes = await encodeJpeg(getBitmapImageData(bitmap, width, height, true), {
       quality: settings.quality,
       progressive: true,
