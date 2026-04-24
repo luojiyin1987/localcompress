@@ -11,50 +11,92 @@
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <div class="page-shell">
-      <header class="hero">
-        <div class="hero-copy">
-          <p class="eyebrow">Cloudflare Pages / Local-Only Compression</p>
-          <h1>PDF、PPTX 和 DOCX 都在浏览器本地压缩。</h1>
-          <p class="hero-text">
-            浏览器直接读取文件，压缩流程放进 Web Worker。PDF 由 Ghostscript/QPDF WASM 处理，
-            PPTX 和 DOCX 由 JSZip 解包并重压缩内嵌图片。
-          </p>
-          <div class="hero-pills">
-            <span>文档不上传</span>
-            <span>批量队列</span>
-            <span>Worker 隔离</span>
-            <span>QPDF 优化</span>
-            <span>PPTX 图片重压缩</span>
-            <span>DOCX 图片重压缩</span>
+    <div class="app-shell">
+      <aside class="intro-rail" aria-label="Paper Squeeze 简介">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">PS</span>
+          <div>
+            <strong>Paper Squeeze</strong>
+            <span>Local Document Compression</span>
           </div>
         </div>
 
-        <aside class="hero-panel">
-          <p class="panel-label">处理路径</p>
-          <ol class="pipeline">
-            <li>浏览器读取本地 PDF</li>
-            <li>Web Worker 接管任务</li>
-            <li>Ghostscript WASM 压缩</li>
-            <li>QPDF WASM 结构优化</li>
-            <li>JSZip 重写 Office 图片</li>
-            <li>浏览器生成下载文件</li>
-          </ol>
-          <p class="panel-footnote">当前版本已接入 PDF 压缩、PDF 结构优化和 Office 图片重压缩。</p>
-        </aside>
-      </header>
+        <div class="intro-copy">
+          <p class="eyebrow">Browser-only</p>
+          <h1>本地压缩 PDF / PPTX / DOCX</h1>
+          <p>
+            在浏览器中处理文件，<strong>文件不上传</strong>。适合压缩演示文稿、Word 文档和 PDF。
+          </p>
+        </div>
 
-      <main class="layout">
-        <section class="tool-card tool-card-primary">
-          <div class="section-head">
+        <ol class="workflow">
+          <li>
+            <span>1</span>
+            <div>
+              <strong>选择文件</strong>
+              <p>添加 PDF、PPTX 或 DOCX</p>
+            </div>
+          </li>
+          <li>
+            <span>2</span>
+            <div>
+              <strong>设置压缩档位</strong>
+              <p>在体积和质量之间取舍</p>
+            </div>
+          </li>
+          <li>
+            <span>3</span>
+            <div>
+              <strong>本地处理</strong>
+              <p>Worker 在浏览器内完成任务</p>
+            </div>
+          </li>
+          <li>
+            <span>4</span>
+            <div>
+              <strong>下载结果</strong>
+              <p>保存压缩后的文件</p>
+            </div>
+          </li>
+        </ol>
+
+        <div class="local-proof">
+          <span aria-hidden="true">✓</span>
+          <div>
+            <strong>100% 本地处理</strong>
+            <p>文件从不离开你的设备</p>
+          </div>
+        </div>
+      </aside>
+
+      <main class="workspace">
+        <header class="mobile-brand">
+          <div class="brand">
+            <span class="brand-mark" aria-hidden="true">PS</span>
+            <div>
+              <strong>Paper Squeeze</strong>
+              <span>本地文档压缩</span>
+            </div>
+          </div>
+          <span class="status-chip" id="mobile-engine-status" aria-hidden="true">本地处理</span>
+        </header>
+
+        <section class="tool-card tool-card-primary" aria-labelledby="tool-title">
+          <div class="tool-head">
             <div>
               <p class="section-kicker">Local Compression</p>
-              <h2>PDF / PPTX / DOCX 压缩</h2>
+              <h2 id="tool-title">压缩文档</h2>
             </div>
             <span class="status-chip" id="engine-status">检测引擎中</span>
           </div>
 
-          <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="选择 PDF、PPTX 或 DOCX 文件">
+          <div
+            class="dropzone"
+            id="dropzone"
+            tabindex="0"
+            role="button"
+            aria-label="选择 PDF、PPTX 或 DOCX 文件"
+          >
             <input
               id="file-input"
               type="file"
@@ -62,72 +104,148 @@
               multiple
               hidden
             />
-            <p class="dropzone-title">拖入 PDF / PPTX / DOCX，或点这里选择文件</p>
-            <p class="dropzone-subtitle">支持批量加入队列。文件只在当前浏览器内处理。</p>
+            <div class="format-stack" aria-hidden="true">
+              <span class="format-token pdf">PDF</span>
+              <span class="format-token pptx">PPTX</span>
+              <span class="format-token docx">DOCX</span>
+            </div>
+            <span class="drop-icon" aria-hidden="true">↓</span>
+            <p class="dropzone-title">拖拽文件到这里，或点击选择</p>
+            <p class="dropzone-subtitle">支持 PDF、PPTX、DOCX，可一次选择多个文件。</p>
+            <span class="dropzone-action">选择文件</span>
           </div>
 
           <div class="toolbar">
-            <label class="field">
-              <span>压缩档位</span>
-              <select id="profile-select">
-                <option value="balanced">均衡</option>
-                <option value="strong">强力</option>
-                <option value="archive">原图</option>
-              </select>
-            </label>
+            <div class="option-group">
+              <span class="option-title">压缩方案</span>
+              <div class="profile-picker" role="radiogroup" aria-label="压缩方案">
+                <button
+                  class="profile-option is-selected"
+                  type="button"
+                  role="radio"
+                  aria-checked="true"
+                  data-profile="balanced"
+                >
+                  <strong>均衡</strong>
+                  <small>推荐日常使用</small>
+                </button>
+                <button
+                  class="profile-option"
+                  type="button"
+                  role="radio"
+                  aria-checked="false"
+                  data-profile="strong"
+                >
+                  <strong>强力</strong>
+                  <small>优先减小体积</small>
+                </button>
+                <button
+                  class="profile-option"
+                  type="button"
+                  role="radio"
+                  aria-checked="false"
+                  data-profile="archive"
+                >
+                  <strong>原图</strong>
+                  <small>尽量保留质量</small>
+                </button>
+              </div>
+              <label class="field field-hidden">
+                <select id="profile-select" aria-label="压缩方案" tabindex="-1">
+                  <option value="balanced">均衡 - 推荐日常使用</option>
+                  <option value="strong">强力 - 更小体积</option>
+                  <option value="archive">原图 - 尽量保留质量</option>
+                </select>
+              </label>
+            </div>
 
-            <label class="checkbox-field disabled-field">
-              <input id="structure-toggle" type="checkbox" disabled />
-              <span>启用 PDF 结构优化（QPDF WASM）</span>
-            </label>
-
-            <button class="primary-button" id="compress-button" type="button">
-              开始压缩
-            </button>
-          </div>
-
-          <div class="queue-summary" id="queue-summary">
-            <span>0 个文件</span>
-            <span>总计 0 B</span>
-          </div>
-
-          <ul class="file-list" id="file-list" aria-live="polite"></ul>
-        </section>
-
-        <section class="tool-card side-card">
-          <div class="section-head">
-            <div>
-              <p class="section-kicker">功能</p>
+            <div class="option-group">
+              <span class="option-title">PDF 结构优化</span>
+              <label class="checkbox-field disabled-field">
+                <input id="structure-toggle" type="checkbox" disabled />
+                <span>
+                  <strong>启用 QPDF 优化</strong>
+                  <small>仅 PDF 生效，可进一步减小体积</small>
+                </span>
+              </label>
             </div>
           </div>
 
-          <div class="future-list">
-            <article class="future-item active">
-              <strong>PDF 压缩</strong>
-              <p>首屏主功能，已接入批量队列、Ghostscript WASM 和 QPDF WASM。</p>
-            </article>
-            <article class="future-item active">
-              <strong>PPTX 压缩</strong>
-              <p>JSZip 解包 + 图片重压缩，再回写 ZIP。</p>
-            </article>
-            <article class="future-item active">
-              <strong>DOCX 压缩</strong>
-              <p>沿用 Office Open XML 流程，优先处理嵌入图片。</p>
-            </article>
-            <article class="future-item">
-              <strong>批量压缩</strong>
-              <p>当前队列已支持多文件，后续补并行和失败重试。</p>
-            </article>
-          </div>
+          <button class="primary-button" id="compress-button" type="button">
+            <span aria-hidden="true">▶</span>
+            开始压缩
+          </button>
 
-          <div class="privacy-note">
-            <p class="privacy-title">本地处理说明</p>
-            <p>
-              这个版本不会把文件上传到服务器。PDF 引擎和 Office 图片处理都在浏览器端 Worker 中运行。
-            </p>
+          <div class="queue-panel">
+            <div class="queue-head">
+              <strong>待处理文件</strong>
+              <div class="queue-summary" id="queue-summary">
+                <span>0 个文件</span>
+                <span>总计 0 B</span>
+              </div>
+            </div>
+
+            <ul class="file-list" id="file-list" aria-live="polite"></ul>
           </div>
         </section>
       </main>
+
+      <aside class="info-rail" aria-label="压缩能力和隐私说明">
+        <section class="info-card privacy-card">
+          <div class="info-card-head">
+            <h2>隐私保护</h2>
+            <span aria-hidden="true">✓</span>
+          </div>
+          <ul class="check-list">
+            <li>文件不上传</li>
+            <li>所有处理在本地完成</li>
+            <li>不收集任何数据</li>
+          </ul>
+        </section>
+
+        <section class="info-card">
+          <div class="info-card-head">
+            <h2>支持格式</h2>
+          </div>
+          <div class="format-list">
+            <span class="format-token pdf">PDF</span>
+            <div>
+              <strong>PDF</strong>
+              <p>.pdf</p>
+            </div>
+            <span class="format-token pptx">PPTX</span>
+            <div>
+              <strong>PPTX</strong>
+              <p>.pptx</p>
+            </div>
+            <span class="format-token docx">DOCX</span>
+            <div>
+              <strong>DOCX</strong>
+              <p>.docx</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="info-card">
+          <div class="info-card-head">
+            <h2>处理流程</h2>
+          </div>
+          <div class="process-list">
+            <div>
+              <span aria-hidden="true">⚙</span>
+              <p><strong>智能压缩</strong>优化图片质量与分辨率</p>
+            </div>
+            <div>
+              <span aria-hidden="true">□</span>
+              <p><strong>结构优化</strong>重写 PDF 内部结构</p>
+            </div>
+            <div>
+              <span aria-hidden="true">↓</span>
+              <p><strong>本地保存</strong>浏览器生成下载文件</p>
+            </div>
+          </div>
+        </section>
+      </aside>
     </div>
 
     <template id="file-row-template">

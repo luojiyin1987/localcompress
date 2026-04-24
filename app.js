@@ -19,6 +19,7 @@ const fileInput = document.querySelector("#file-input");
 const fileList = document.querySelector("#file-list");
 const queueSummary = document.querySelector("#queue-summary");
 const profileSelect = document.querySelector("#profile-select");
+const profileOptions = Array.from(document.querySelectorAll(".profile-option"));
 const structureToggle = document.querySelector("#structure-toggle");
 const compressButton = document.querySelector("#compress-button");
 const engineStatus = document.querySelector("#engine-status");
@@ -38,6 +39,24 @@ const formatBytes = (bytes) => {
 const setEngineStatus = (label, tone = "") => {
   engineStatus.textContent = label;
   engineStatus.className = `status-chip${tone ? ` ${tone}` : ""}`;
+};
+
+const syncProfileOptions = (value) => {
+  profileOptions.forEach((option) => {
+    const isSelected = option.dataset.profile === value;
+    option.classList.toggle("is-selected", isSelected);
+    option.setAttribute("aria-checked", String(isSelected));
+    option.tabIndex = isSelected ? 0 : -1;
+  });
+};
+
+const selectProfile = (value, shouldDispatch = false) => {
+  profileSelect.value = value;
+  syncProfileOptions(profileSelect.value);
+
+  if (shouldDispatch) {
+    profileSelect.dispatchEvent(new Event("change", { bubbles: true }));
+  }
 };
 
 const getFileKind = (file) => {
@@ -223,6 +242,39 @@ const handleSelection = (fileListLike) => {
   addFiles(Array.from(fileListLike));
 };
 
+profileOptions.forEach((option) => {
+  option.addEventListener("click", () => {
+    selectProfile(option.dataset.profile, true);
+  });
+
+  option.addEventListener("keydown", (event) => {
+    const currentIndex = profileOptions.findIndex((entry) => entry.dataset.profile === profileSelect.value);
+    let nextIndex = currentIndex;
+
+    if (event.key === " " || event.key === "Enter") {
+      event.preventDefault();
+      selectProfile(option.dataset.profile, true);
+      return;
+    }
+
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+      nextIndex = (currentIndex + 1) % profileOptions.length;
+    } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+      nextIndex = (currentIndex - 1 + profileOptions.length) % profileOptions.length;
+    } else {
+      return;
+    }
+
+    event.preventDefault();
+    selectProfile(profileOptions[nextIndex].dataset.profile, true);
+    profileOptions[nextIndex].focus();
+  });
+});
+
+profileSelect.addEventListener("change", () => {
+  syncProfileOptions(profileSelect.value);
+});
+
 dropzone.addEventListener("click", () => fileInput.click());
 dropzone.addEventListener("keydown", (event) => {
   if (event.key === "Enter" || event.key === " ") {
@@ -407,6 +459,7 @@ worker.addEventListener("message", (event) => {
 });
 
 worker.postMessage({ type: "probe-engine" });
+selectProfile(profileSelect.value);
 renderFiles();
 
 window.addEventListener("beforeunload", () => {
