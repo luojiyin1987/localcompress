@@ -108,7 +108,7 @@ const toTransferableBuffer = (bytes) => {
     return bytes.buffer;
   }
 
-  return bytes.slice().buffer;
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
 };
 
 const buildOutputName = (name, profile, optimizeStructure) => {
