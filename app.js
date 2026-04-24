@@ -1,6 +1,11 @@
 const worker = new Worker(new URL("./workers/pdf-worker.js", import.meta.url), { type: "module" });
 
 const pptxMime = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+const docxMime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+const officeMimeByKind = {
+  pptx: pptxMime,
+  docx: docxMime,
+};
 
 const state = {
   files: [],
@@ -46,6 +51,10 @@ const getFileKind = (file) => {
     return "pptx";
   }
 
+  if (file.type === docxMime || name.endsWith(".docx")) {
+    return "docx";
+  }
+
   return "";
 };
 
@@ -78,6 +87,17 @@ const getPickerTypes = (item) => {
         description: "PowerPoint Presentation",
         accept: {
           [pptxMime]: [".pptx"],
+        },
+      },
+    ];
+  }
+
+  if (item.kind === "docx") {
+    return [
+      {
+        description: "Word Document",
+        accept: {
+          [docxMime]: [".docx"],
         },
       },
     ];
@@ -130,7 +150,7 @@ const renderFiles = () => {
   if (state.files.length === 0) {
     const emptyRow = document.createElement("li");
     emptyRow.className = "empty-row";
-    emptyRow.textContent = "队列为空。当前接受 PDF 和 PPTX 文件，支持一次加入多个文件。";
+    emptyRow.textContent = "队列为空。当前接受 PDF、PPTX 和 DOCX 文件，支持一次加入多个文件。";
     fileList.appendChild(emptyRow);
   }
 
@@ -194,7 +214,7 @@ const addFiles = (incomingFiles) => {
       kind: "",
       statusLabel: "已忽略",
       tone: "error",
-      message: "当前只接收 PDF 和 PPTX 文件。",
+      message: "当前只接收 PDF、PPTX 和 DOCX 文件。",
       downloadUrl: "",
       outputBlob: null,
       outputName: "",
@@ -264,8 +284,9 @@ const compressFile = (item, profile, optimizeStructure) =>
       .then((buffer) => {
         worker.postMessage(
           {
-            type: item.kind === "pptx" ? "compress-pptx" : "compress-pdf",
+            type: item.kind === "pdf" ? "compress-pdf" : "compress-office",
             id: item.id,
+            kind: item.kind,
             name: item.file.name,
             buffer,
             profile,
@@ -297,13 +318,13 @@ compressButton.addEventListener("click", async () => {
 
     revokeDownload(item);
     clearOutput(item);
-    const isPptx = item.kind === "pptx";
+    const isOffice = item.kind === "pptx" || item.kind === "docx";
 
     markItem(item.id, {
       statusLabel: "压缩中",
       tone: "processing",
-      message: isPptx
-        ? `JSZip 正在解包 PPTX，并按 ${profile} 档位重压缩图片。`
+      message: isOffice
+        ? `JSZip 正在解包 ${item.kind.toUpperCase()}，并按 ${profile} 档位重压缩图片。`
         : optimizeStructure
           ? `Ghostscript 压缩后将执行 QPDF 结构优化，使用 ${profile} 档位。`
           : `Ghostscript WASM 正在处理，使用 ${profile} 档位。`,
@@ -313,7 +334,7 @@ compressButton.addEventListener("click", async () => {
       outputBlob: null,
     });
 
-    const result = await compressFile(item, profile, !isPptx && optimizeStructure);
+    const result = await compressFile(item, profile, !isOffice && optimizeStructure);
 
     if (!result.ok) {
       markItem(item.id, {
@@ -329,7 +350,7 @@ compressButton.addEventListener("click", async () => {
     }
 
     const blob = new Blob([result.buffer], {
-      type: isPptx ? pptxMime : "application/pdf",
+      type: officeMimeByKind[item.kind] ?? "application/pdf",
     });
     markItem(item.id, {
       statusLabel: "已完成",

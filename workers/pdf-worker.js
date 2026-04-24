@@ -81,9 +81,10 @@ const buildOutputName = (name, profile, optimizeStructure) => {
   return `${baseName}.${profile}${optimizeStructure ? ".qpdf" : ""}.pdf`;
 };
 
-const buildPptxOutputName = (name, profile) => {
-  const baseName = name.replace(/\.pptx$/i, "");
-  return `${baseName}.${profile}.pptx`;
+const buildOfficeOutputName = (name, profile, kind) => {
+  const extension = kind === "docx" ? "docx" : "pptx";
+  const baseName = name.replace(new RegExp(`\\.${extension}$`, "i"), "");
+  return `${baseName}.${profile}.${extension}`;
 };
 
 const optimizePdfStructure = async ({ id, buffer }) => {
@@ -169,8 +170,8 @@ const compressPdf = async ({ id, name, buffer, profile, optimizeStructure }) => 
   };
 };
 
-const isPptxMediaImage = (path) =>
-  /^ppt\/media\/.+\.(png|jpe?g)$/i.test(path);
+const isOfficeMediaImage = (path) =>
+  /^(ppt|word)\/media\/.+\.(png|jpe?g)$/i.test(path);
 
 const getJpegPath = (path) => path.replace(/\.(png|jpe?g)$/i, ".jpg");
 
@@ -238,7 +239,7 @@ const replaceZipTextReferences = async (zip, fromPath, toPath) => {
     (entry) =>
       !entry.dir &&
       /\.(xml|rels)$/i.test(entry.name) &&
-      !entry.name.startsWith("ppt/media/")
+      !/^(ppt|word)\/media\//i.test(entry.name)
   );
 
   await Promise.all(
@@ -275,10 +276,10 @@ const ensureJpegContentType = async (zip) => {
   zip.file("[Content_Types].xml", updated);
 };
 
-const compressPptx = async ({ id, name, buffer, profile }) => {
+const compressOffice = async ({ id, name, buffer, profile, kind }) => {
   const zip = await JSZip.loadAsync(buffer);
   const imageEntries = Object.values(zip.files).filter(
-    (entry) => !entry.dir && isPptxMediaImage(entry.name)
+    (entry) => !entry.dir && isOfficeMediaImage(entry.name)
   );
   let optimizedImages = 0;
 
@@ -318,11 +319,11 @@ const compressPptx = async ({ id, name, buffer, profile }) => {
     ok: true,
     id,
     buffer: toTransferableBuffer(output),
-    outputName: buildPptxOutputName(name, profile),
+    outputName: buildOfficeOutputName(name, profile, kind),
     message:
       optimizedImages > 0
-        ? `PPTX 压缩完成，已重压缩 ${optimizedImages}/${imageEntries.length} 张图片。`
-        : `PPTX 已重新打包，${imageEntries.length} 张图片未产生更小版本。`,
+        ? `${kind.toUpperCase()} 压缩完成，已重压缩 ${optimizedImages}/${imageEntries.length} 张图片。`
+        : `${kind.toUpperCase()} 已重新打包，${imageEntries.length} 张图片未产生更小版本。`,
   };
 };
 
@@ -342,7 +343,7 @@ self.addEventListener("message", async (event) => {
     return;
   }
 
-  if (message.type !== "compress-pdf" && message.type !== "compress-pptx") {
+  if (message.type !== "compress-pdf" && message.type !== "compress-office") {
     return;
   }
 
@@ -355,7 +356,7 @@ self.addEventListener("message", async (event) => {
   try {
     activeLogs = [];
     const result =
-      message.type === "compress-pptx" ? await compressPptx(message) : await compressPdf(message);
+      message.type === "compress-office" ? await compressOffice(message) : await compressPdf(message);
     port.postMessage(result, result.ok ? [result.buffer] : []);
   } catch (error) {
     port.postMessage({
