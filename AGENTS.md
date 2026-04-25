@@ -36,7 +36,7 @@ Paper Squeeze — browser-based local compression for PDF, PPTX, and DOCX. Pure 
 - **Worker singleton**: `pdf-worker.js` is instantiated once in `app.js`. It handles both `compress-pdf` and `compress-office` messages via `MessageChannel` ports.
 - **WASM loading**: WASM binaries are imported with Vite's `?url` suffix (e.g., `import ghostscriptWasmUrl from "@okathira/ghostpdl-wasm/gs.wasm?url"`). Do not remove `?url`.
 - **No test framework**: The project has no unit tests. Verification is `npm run check` (syntax + build) plus manual browser testing.
-- **Modern browser APIs required**: `OffscreenCanvas`, `createImageBitmap`, `FileSystemAccess` (optional fallback to anchor download). Worker code assumes these exist.
+- **Modern browser APIs**: Office image recompression feature-detects `OffscreenCanvas` and `createImageBitmap`; if unavailable, image optimization for that entry is skipped. Downloads prefer the File System Access API (`showSaveFilePicker`) when available and fall back to an anchor download.
 
 ## File Type Detection
 
@@ -45,7 +45,7 @@ Detection is in `app.js` `getFileKind()`. It checks both `file.type` and filenam
 ## Style / Conventions
 
 - ES modules everywhere (`"type": "module"` in `package.json`)
-- No semicolons enforced in existing code — follow the dominant style
+- Existing JavaScript uses semicolons — follow that style
 - Chinese UI strings — keep user-facing text in Chinese
 - Worker uses camelCase; `app.js` uses camelCase
 
