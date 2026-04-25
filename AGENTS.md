@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Paper Squeeze — browser-based local compression for PDF, PPTX, and DOCX. Pure static site (Cloudflare Pages). All processing happens in a Web Worker via WASM; nothing is uploaded to a server.
+Paper Squeeze — browser-based local compression for PDF, PPTX, and DOCX. Pure static site (Cloudflare Pages). The main thread owns UI state, queue orchestration, Worker lifecycle, and local saving; compression work is dispatched to a Web Worker. PDF compression uses Ghostscript/QPDF WASM, while Office compression uses JSZip plus browser image APIs and jSquash WASM encoders. Nothing is uploaded to a server.
 
 ## Tech Stack
 
@@ -25,7 +25,7 @@ Paper Squeeze — browser-based local compression for PDF, PPTX, and DOCX. Pure 
 
 ## Architecture
 
-- `app.js` — main thread UI and queue orchestration
+- `app.js` — main thread UI, queue orchestration, Worker lifecycle/restart handling, and local save flow
 - `workers/pdf-worker.js` — **all** compression logic (PDF + Office), despite the filename
 - `index.html` — single static entry page
 - `wrangler.toml` — Cloudflare Pages config
@@ -33,10 +33,10 @@ Paper Squeeze — browser-based local compression for PDF, PPTX, and DOCX. Pure 
 ## Critical Constraints
 
 - **Serial processing only**: Ghostscript and QPDF WASM modules use a singleton in-memory file system (Emscripten FS). Parallel instances cause path conflicts and state corruption. The queue in `app.js` processes files one at a time by design.
-- **Worker singleton**: `pdf-worker.js` is instantiated once in `app.js`. It handles both `compress-pdf` and `compress-office` messages via `MessageChannel` ports.
+- **Worker lifecycle**: `app.js` keeps one active Worker and one active compression task at a time, but it can terminate and recreate the Worker on timeout, `error`, or `messageerror`. Restart paths must preserve predictable UI state and queue behavior.
 - **WASM loading**: WASM binaries are imported with Vite's `?url` suffix (e.g., `import ghostscriptWasmUrl from "@okathira/ghostpdl-wasm/gs.wasm?url"`). Do not remove `?url`.
 - **No test framework**: The project has no unit tests. Verification is `npm run check` (syntax + build) plus manual browser testing.
-- **Modern browser APIs**: Office image recompression feature-detects `OffscreenCanvas` and `createImageBitmap`; if unavailable, image optimization for that entry is skipped. Downloads prefer the File System Access API (`showSaveFilePicker`) when available and fall back to an anchor download.
+- **Modern browser APIs**: Office image recompression feature-detects `OffscreenCanvas` and `createImageBitmap` in `recompressImage()`. If either API is unavailable, Office files are still rebuilt with JSZip, but image recompression is skipped. Downloads prefer the File System Access API (`showSaveFilePicker`) when available and fall back to an anchor download.
 
 ## File Type Detection
 
