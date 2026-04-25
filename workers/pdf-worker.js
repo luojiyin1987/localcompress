@@ -72,12 +72,13 @@ self.postMessage({
   message: "压缩引擎加载中",
 });
 
-const postEngineStatus = (ready, message, loading = false) => {
+const postEngineStatus = (ready, message, loading = false, qpdfReady = false) => {
   self.postMessage({
     type: "engine-status",
     ready,
     loading,
     message,
+    qpdfReady,
   });
 };
 
@@ -207,18 +208,35 @@ const compressPdf = async ({ id, name, buffer, profile, optimizeStructure }) => 
   removeFile(Module.FS, outputPath);
 
   const ghostscriptOutputBuffer = toTransferableBuffer(ghostscriptOutput);
-  const outputBuffer = optimizeStructure
-    ? await optimizePdfStructure({ id, buffer: ghostscriptOutputBuffer })
-    : ghostscriptOutputBuffer;
+  let qpdfOutputBuffer = null;
+  let outputBuffer = ghostscriptOutputBuffer;
+
+  if (optimizeStructure) {
+    qpdfOutputBuffer = await optimizePdfStructure({ id, buffer: ghostscriptOutputBuffer });
+    if (qpdfOutputBuffer.byteLength < outputBuffer.byteLength) {
+      outputBuffer = qpdfOutputBuffer;
+    }
+  }
+
+  if (outputBuffer.byteLength >= buffer.byteLength) {
+    outputBuffer = buffer;
+  }
+
+  let message = "压缩完成，文件已在浏览器本地生成。";
+  if (outputBuffer === buffer) {
+    message = "压缩后文件未变小，已返回原文件。";
+  } else if (outputBuffer === qpdfOutputBuffer) {
+    message = "压缩完成，并已通过 QPDF 重写 PDF 结构。";
+  } else if (optimizeStructure) {
+    message = "压缩完成，QPDF 输出未进一步变小，已保留较小版本。";
+  }
 
   return {
     ok: true,
     id,
     buffer: outputBuffer,
     outputName: buildOutputName(name, profile, optimizeStructure),
-    message: optimizeStructure
-      ? "压缩完成，并已通过 QPDF 重写 PDF 结构。"
-      : "压缩完成，文件已在浏览器本地生成。",
+    message,
   };
 };
 
@@ -263,6 +281,16 @@ const getBitmapImageData = (bitmap, width, height, flattenAlpha = false) => {
 
   context.drawImage(bitmap, 0, 0, width, height);
   return context.getImageData(0, 0, width, height);
+};
+
+const hasTransparentPixels = (imageData) => {
+  const data = imageData.data;
+  for (let i = 3; i < data.length; i += 4) {
+    if (data[i] < 255) {
+      return true;
+    }
+  }
+  return false;
 };
 
 const decodeZipPath = (path) => {
@@ -383,8 +411,9 @@ const recompressImage = async (bytes, path, profile) => {
       }
 
       // Balanced / Archive: 先尝试 OxiPNG 无损优化，保留透明通道
+      const pngImageData = getBitmapImageData(bitmap, width, height);
       const optimisePng = await getOxipngEncoder();
-      const pngBytes = await optimisePng(getBitmapImageData(bitmap, width, height), {
+      const pngBytes = await optimisePng(pngImageData, {
         level: 2,
         interlace: false,
         optimiseAlpha: true,
@@ -399,7 +428,11 @@ const recompressImage = async (bytes, path, profile) => {
         return null;
       }
 
-      // Balanced: fallback 到 MozJPEG
+      // Balanced: fallback 到 MozJPEG（仅当不含透明像素时）
+      if (hasTransparentPixels(pngImageData)) {
+        return null;
+      }
+
       const encodeJpeg = await getJpegEncoder();
       const jpegBytes = await encodeJpeg(getBitmapImageData(bitmap, width, height, true), {
         quality: settings.quality,
@@ -540,13 +573,18 @@ const compressOffice = async ({ id, name, buffer, profile, kind }) => {
     compressionOptions: { level: 9 },
   });
 
+  const outputBuffer = output.byteLength < buffer.byteLength
+    ? toTransferableBuffer(output)
+    : buffer;
+
   return {
     ok: true,
     id,
-    buffer: toTransferableBuffer(output),
+    buffer: outputBuffer,
     outputName: buildOfficeOutputName(name, profile, kind),
-    message:
-      optimizedImages > 0
+    message: outputBuffer === buffer
+      ? "压缩后文件未变小，已返回原文件。"
+      : optimizedImages > 0
         ? `${kind.toUpperCase()} 压缩完成，已重压缩 ${optimizedImages}/${imageEntries.length} 张图片。`
         : `${kind.toUpperCase()} 已重新打包，${imageEntries.length} 张图片未产生更小版本。`,
   };
@@ -558,7 +596,16 @@ self.addEventListener("message", async (event) => {
   if (message.type === "probe-engine") {
     try {
       await getModule();
-      postEngineStatus(true, "Ghostscript WASM 已就绪");
+      let qpdfReady = false;
+      let statusMessage = "Ghostscript WASM 已就绪";
+      try {
+        await getQpdfModule();
+        qpdfReady = true;
+        statusMessage = "Ghostscript 与 QPDF 均已就绪";
+      } catch {
+        statusMessage = "Ghostscript 已就绪，QPDF 结构优化不可用";
+      }
+      postEngineStatus(true, statusMessage, false, qpdfReady);
     } catch (error) {
       postEngineStatus(
         false,
