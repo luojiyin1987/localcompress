@@ -1,4 +1,7 @@
-const worker = new Worker(new URL("./workers/pdf-worker.js", import.meta.url), { type: "module" });
+const compressionTimeoutMs = 300000;
+
+let worker;
+let activeCompression = null;
 
 const pptxMime = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
 const docxMime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
@@ -25,8 +28,43 @@ const compressButton = document.querySelector("#compress-button");
 const engineStatus = document.querySelector("#engine-status");
 const rowTemplate = document.querySelector("#file-row-template");
 
+const setStructureToggleEnabled = (enabled) => {
+  structureToggle.disabled = !enabled;
+  if (!enabled) {
+    structureToggle.checked = false;
+  }
+  structureToggle.closest(".checkbox-field")?.classList.toggle("disabled-field", !enabled);
+};
+
+const createWorker = () => {
+  const nextWorker = new Worker(new URL("./workers/pdf-worker.js", import.meta.url), { type: "module" });
+  nextWorker.addEventListener("message", handleWorkerMessage);
+  nextWorker.addEventListener("error", handleWorkerError);
+  nextWorker.addEventListener("messageerror", handleWorkerMessageError);
+  return nextWorker;
+};
+
+const probeWorker = () => {
+  worker.postMessage({ type: "probe-engine" });
+};
+
+const restartWorker = (message) => {
+  worker?.terminate();
+  worker = createWorker();
+  state.engineReady = false;
+  state.engineMessage = message;
+  setEngineStatus(message);
+  setStructureToggleEnabled(false);
+  renderFiles();
+  probeWorker();
+};
+
+const finishActiveCompression = (result) => {
+  activeCompression?.resolve(result);
+};
+
 const formatBytes = (bytes) => {
-  if (!Number.isFinite(bytes) || bytes <= 0) {  
+  if (!Number.isFinite(bytes) || bytes <= 0) {
     return "0 B";
   }
 
@@ -76,6 +114,10 @@ const getFileKind = (file) => {
 
   return "";
 };
+
+const isOfficeKind = (kind) => kind === "pptx" || kind === "docx";
+
+const canProcessItem = (item) => item.kind === "pdf" ? state.engineReady : isOfficeKind(item.kind);
 
 const updateSummary = () => {
   const totalBytes = state.files.reduce((sum, item) => sum + item.file.size, 0);
@@ -143,14 +185,14 @@ const fallbackDownload = (blob, filename) => {
   anchor.click();
   anchor.remove();
 
-  window.setTimeout(() => {
-    URL.revokeObjectURL(downloadUrl);
-  }, 10 * 60 * 1000);
+  return downloadUrl;
 };
 
 const saveBlob = async (item) => {
+  revokeDownload(item);
+
   if (!("showSaveFilePicker" in window)) {
-    fallbackDownload(item.outputBlob, item.outputName);
+    item.downloadUrl = fallbackDownload(item.outputBlob, item.outputName);
     return;
   }
 
@@ -202,7 +244,8 @@ const renderFiles = () => {
   });
 
   updateSummary();
-  compressButton.disabled = state.isProcessing || state.files.length === 0 || !state.engineReady;
+  compressButton.disabled =
+    state.isProcessing || state.files.length === 0 || !state.files.some((item) => canProcessItem(item));
 };
 
 const createItem = (file) => ({
@@ -312,31 +355,92 @@ dropzone.addEventListener("drop", (event) => {
 
 const compressFile = (item, profile, optimizeStructure) =>
   new Promise((resolve) => {
+    if (activeCompression) {
+      resolve({
+        ok: false,
+        id: item.id,
+        error: "已有压缩任务正在运行，请稍后重试。",
+      });
+      return;
+    }
+
     const channel = new MessageChannel();
+    let resolved = false;
+    let timeoutId;
+
+    const cleanup = () => {
+      clearTimeout(timeoutId);
+      channel.port1.close();
+    };
+
+    const doResolve = (value) => {
+      if (!resolved) {
+        resolved = true;
+        if (activeCompression?.id === item.id) {
+          activeCompression = null;
+        }
+        cleanup();
+        resolve(value);
+      }
+    };
+
+    activeCompression = {
+      id: item.id,
+      resolve: doResolve,
+    };
+
+    timeoutId = setTimeout(() => {
+      doResolve({
+        ok: false,
+        id: item.id,
+        error: "压缩任务超时，请重试或降低档位。",
+        stopQueue: true,
+      });
+      restartWorker("压缩任务超时，压缩引擎已重启。");
+    }, compressionTimeoutMs);
 
     channel.port1.onmessage = (event) => {
-      resolve(event.data);
-      channel.port1.close();
+      doResolve(event.data);
+    };
+
+    channel.port1.onmessageerror = () => {
+      doResolve({
+        ok: false,
+        id: item.id,
+        error: "Worker 消息通道错误，数据无法解析。",
+      });
     };
 
     item.file
       .arrayBuffer()
       .then((buffer) => {
-        worker.postMessage(
-          {
-            type: item.kind === "pdf" ? "compress-pdf" : "compress-office",
+        if (resolved) {
+          return;
+        }
+
+        try {
+          worker.postMessage(
+            {
+              type: item.kind === "pdf" ? "compress-pdf" : "compress-office",
+              id: item.id,
+              kind: item.kind,
+              name: item.file.name,
+              buffer,
+              profile,
+              optimizeStructure,
+            },
+            [buffer, channel.port2]
+          );
+        } catch (error) {
+          doResolve({
+            ok: false,
             id: item.id,
-            kind: item.kind,
-            name: item.file.name,
-            buffer,
-            profile,
-            optimizeStructure,
-          },
-          [buffer, channel.port2]
-        );
+            error: error instanceof Error ? error.message : "Worker 通信失败。",
+          });
+        }
       })
       .catch((error) => {
-        resolve({
+        doResolve({
           ok: false,
           id: item.id,
           error: error instanceof Error ? error.message : "读取文件失败。",
@@ -351,23 +455,40 @@ compressButton.addEventListener("click", async () => {
   const profile = profileSelect.value;
   const optimizeStructure = structureToggle.checked;
 
+  let currentIndex = 0;
+  const totalValid = state.files.filter((item) => item.kind).length;
+
   for (const item of state.files) {
     if (!item.kind) {
       continue;
     }
 
+    currentIndex += 1;
     revokeDownload(item);
     clearOutput(item);
-    const isOffice = item.kind === "pptx" || item.kind === "docx";
+    const isOffice = isOfficeKind(item.kind);
+
+    if (item.kind === "pdf" && !state.engineReady) {
+      markItem(item.id, {
+        statusLabel: "未完成",
+        tone: "error",
+        message: state.engineMessage || "PDF 压缩引擎未就绪。",
+        resultBytes: 0,
+        outputName: "",
+        downloadUrl: "",
+        outputBlob: null,
+      });
+      continue;
+    }
 
     markItem(item.id, {
       statusLabel: "压缩中",
       tone: "processing",
       message: isOffice
-        ? `JSZip 正在解包 ${item.kind.toUpperCase()}，并按 ${profile} 档位重压缩图片。`
+        ? `JSZip 正在解包 ${item.kind.toUpperCase()}（${currentIndex}/${totalValid}），并按 ${profile} 档位重压缩图片。`
         : optimizeStructure
-          ? `Ghostscript 压缩后将执行 QPDF 结构优化，使用 ${profile} 档位。`
-          : `Ghostscript WASM 正在处理，使用 ${profile} 档位。`,
+          ? `Ghostscript 压缩后将执行 QPDF 结构优化（${currentIndex}/${totalValid}），使用 ${profile} 档位。`
+          : `Ghostscript WASM 正在处理（${currentIndex}/${totalValid}），使用 ${profile} 档位。`,
       resultBytes: 0,
       outputName: "",
       downloadUrl: "",
@@ -386,6 +507,9 @@ compressButton.addEventListener("click", async () => {
         downloadUrl: "",
         outputBlob: null,
       });
+      if (result.stopQueue) {
+        break;
+      }
       continue;
     }
 
@@ -441,7 +565,7 @@ fileList.addEventListener("click", async (event) => {
   }
 });
 
-worker.addEventListener("message", (event) => {
+function handleWorkerMessage(event) {
   if (event.data?.type !== "engine-status") {
     return;
   }
@@ -450,19 +574,40 @@ worker.addEventListener("message", (event) => {
   state.engineMessage = event.data.message;
 
   if (event.data.ready) {
-    setEngineStatus("引擎已就绪", "ready");
-    structureToggle.disabled = false;
-    structureToggle.closest(".checkbox-field")?.classList.remove("disabled-field");
+    setEngineStatus(event.data.message, "ready");
+    setStructureToggleEnabled(event.data.qpdfReady !== false);
   } else {
     setEngineStatus(event.data.message, event.data.loading ? "" : "error");
-    structureToggle.disabled = true;
-    structureToggle.closest(".checkbox-field")?.classList.add("disabled-field");
+    setStructureToggleEnabled(false);
   }
 
   renderFiles();
-});
+}
 
-worker.postMessage({ type: "probe-engine" });
+function handleWorkerError(event) {
+  console.error("Worker error:", event.message);
+  const message = event.message || "Worker 发生错误";
+  finishActiveCompression({
+    ok: false,
+    id: activeCompression?.id,
+    error: `${message}，压缩引擎已重启。`,
+    stopQueue: true,
+  });
+  restartWorker(`${message}，压缩引擎已重启。`);
+}
+
+function handleWorkerMessageError() {
+  finishActiveCompression({
+    ok: false,
+    id: activeCompression?.id,
+    error: "Worker 消息通道错误，压缩引擎已重启。",
+    stopQueue: true,
+  });
+  restartWorker("Worker 消息通道错误，压缩引擎已重启。");
+}
+
+worker = createWorker();
+probeWorker();
 selectProfile(profileSelect.value);
 renderFiles();
 

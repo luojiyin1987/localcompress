@@ -4,6 +4,32 @@ import loadQpdf from "@neslinesli93/qpdf-wasm";
 import qpdfWasmUrl from "@neslinesli93/qpdf-wasm/dist/qpdf.wasm?url";
 import JSZip from "jszip";
 
+let jpegModulePromise;
+const getJpegEncoder = async () => {
+  if (!jpegModulePromise) {
+    jpegModulePromise = import("@jsquash/jpeg").catch((err) => {
+      jpegModulePromise = null;
+      throw err;
+    });
+  }
+
+  const { encode } = await jpegModulePromise;
+  return encode;
+};
+
+let oxipngModulePromise;
+const getOxipngEncoder = async () => {
+  if (!oxipngModulePromise) {
+    oxipngModulePromise = import("@jsquash/oxipng").catch((err) => {
+      oxipngModulePromise = null;
+      throw err;
+    });
+  }
+
+  const { optimise } = await oxipngModulePromise;
+  return optimise;
+};
+
 const profiles = {
   balanced: "/ebook",
   strong: "/screen",
@@ -33,7 +59,11 @@ const imageProfiles = {
 
 let ghostscriptModulePromise;
 let qpdfModulePromise;
-let activeLogs = null;
+let currentLogCollector = null;
+
+const setLogCollector = (collector) => {
+  currentLogCollector = collector;
+};
 
 self.postMessage({
   type: "engine-status",
@@ -42,12 +72,13 @@ self.postMessage({
   message: "压缩引擎加载中",
 });
 
-const postEngineStatus = (ready, message, loading = false) => {
+const postEngineStatus = (ready, message, loading = false, qpdfReady = false) => {
   self.postMessage({
     type: "engine-status",
     ready,
     loading,
     message,
+    qpdfReady,
   });
 };
 
@@ -55,24 +86,34 @@ const getModule = async () => {
   if (!ghostscriptModulePromise) {
     ghostscriptModulePromise = loadGhostscript({
       locateFile: (path) => (path.endsWith("gs.wasm") ? ghostscriptWasmUrl : path),
-      print: (line) => activeLogs?.push(line),
-      printErr: (line) => activeLogs?.push(line),
+      print: (line) => currentLogCollector?.push(line),
+      printErr: (line) => currentLogCollector?.push(line),
     });
   }
 
-  return ghostscriptModulePromise;
+  try {
+    return await ghostscriptModulePromise;
+  } catch (error) {
+    ghostscriptModulePromise = null;
+    throw error;
+  }
 };
 
 const getQpdfModule = async () => {
   if (!qpdfModulePromise) {
     qpdfModulePromise = loadQpdf({
       locateFile: (path) => (path.endsWith("qpdf.wasm") ? qpdfWasmUrl : path),
-      print: (line) => activeLogs?.push(line),
-      printErr: (line) => activeLogs?.push(line),
+      print: (line) => currentLogCollector?.push(line),
+      printErr: (line) => currentLogCollector?.push(line),
     });
   }
 
-  return qpdfModulePromise;
+  try {
+    return await qpdfModulePromise;
+  } catch (error) {
+    qpdfModulePromise = null;
+    throw error;
+  }
 };
 
 const removeFile = (fs, path) => {
@@ -88,7 +129,7 @@ const toTransferableBuffer = (bytes) => {
     return bytes.buffer;
   }
 
-  return bytes.slice().buffer;
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
 };
 
 const buildOutputName = (name, profile, optimizeStructure) => {
@@ -122,7 +163,7 @@ const optimizePdfStructure = async ({ id, buffer }) => {
   ]);
 
   if (exitCode !== 0) {
-    const lastLog = activeLogs.slice(-4).join(" ");
+    const lastLog = currentLogCollector?.slice(-4).join(" ");
     throw new Error(lastLog || `QPDF 退出码 ${exitCode}`);
   }
 
@@ -141,7 +182,6 @@ const compressPdf = async ({ id, name, buffer, profile, optimizeStructure }) => 
   removeFile(Module.FS, inputPath);
   removeFile(Module.FS, outputPath);
 
-  activeLogs = [];
   Module.FS.writeFile(inputPath, new Uint8Array(buffer));
 
   const exitCode = Module.callMain([
@@ -159,7 +199,7 @@ const compressPdf = async ({ id, name, buffer, profile, optimizeStructure }) => 
   ]);
 
   if (exitCode !== 0) {
-    const lastLog = activeLogs.slice(-4).join(" ");
+    const lastLog = currentLogCollector?.slice(-4).join(" ");
     throw new Error(lastLog || `Ghostscript 退出码 ${exitCode}`);
   }
 
@@ -168,20 +208,35 @@ const compressPdf = async ({ id, name, buffer, profile, optimizeStructure }) => 
   removeFile(Module.FS, outputPath);
 
   const ghostscriptOutputBuffer = toTransferableBuffer(ghostscriptOutput);
-  const outputBuffer = optimizeStructure
-    ? await optimizePdfStructure({ id, buffer: ghostscriptOutputBuffer })
-    : ghostscriptOutputBuffer;
+  let qpdfOutputBuffer = null;
+  let outputBuffer = ghostscriptOutputBuffer;
 
-  activeLogs = null;
+  if (optimizeStructure) {
+    qpdfOutputBuffer = await optimizePdfStructure({ id, buffer: ghostscriptOutputBuffer });
+    if (qpdfOutputBuffer.byteLength < outputBuffer.byteLength) {
+      outputBuffer = qpdfOutputBuffer;
+    }
+  }
+
+  if (outputBuffer.byteLength >= buffer.byteLength) {
+    outputBuffer = buffer;
+  }
+
+  let message = "压缩完成，文件已在浏览器本地生成。";
+  if (outputBuffer === buffer) {
+    message = "压缩后文件未变小，已返回原文件。";
+  } else if (outputBuffer === qpdfOutputBuffer) {
+    message = "压缩完成，并已通过 QPDF 重写 PDF 结构。";
+  } else if (optimizeStructure) {
+    message = "压缩完成，QPDF 输出未进一步变小，已保留较小版本。";
+  }
 
   return {
     ok: true,
     id,
     buffer: outputBuffer,
     outputName: buildOutputName(name, profile, optimizeStructure),
-    message: optimizeStructure
-      ? "压缩完成，并已通过 QPDF 重写 PDF 结构。"
-      : "压缩完成，文件已在浏览器本地生成。",
+    message,
   };
 };
 
@@ -211,6 +266,111 @@ const getAvailableJpegPath = (zip, path) => {
   return candidate;
 };
 
+const getBitmapImageData = (bitmap, width, height, flattenAlpha = false) => {
+  const canvas = new OffscreenCanvas(width, height);
+  const context = canvas.getContext("2d", { alpha: !flattenAlpha });
+
+  if (!context) {
+    throw new Error("浏览器无法创建图片处理上下文。");
+  }
+
+  if (flattenAlpha) {
+    context.fillStyle = "#fff";
+    context.fillRect(0, 0, width, height);
+  }
+
+  context.drawImage(bitmap, 0, 0, width, height);
+  return context.getImageData(0, 0, width, height);
+};
+
+const hasTransparentPixels = (imageData) => {
+  const data = imageData.data;
+  for (let i = 3; i < data.length; i += 4) {
+    if (data[i] < 255) {
+      return true;
+    }
+  }
+  return false;
+};
+
+const decodeZipPath = (path) => {
+  try {
+    return decodeURIComponent(path);
+  } catch {
+    return path;
+  }
+};
+
+const normalizeZipPath = (path) => {
+  const parts = [];
+
+  decodeZipPath(path).split("/").forEach((part) => {
+    if (!part || part === ".") {
+      return;
+    }
+
+    if (part === "..") {
+      parts.pop();
+      return;
+    }
+
+    parts.push(part);
+  });
+
+  return parts.join("/");
+};
+
+const getRelationshipSourceDir = (relsPath) => {
+  const marker = "/_rels/";
+  const markerIndex = relsPath.indexOf(marker);
+
+  if (markerIndex === -1 || !relsPath.endsWith(".rels")) {
+    return "";
+  }
+
+  const ownerDir = relsPath.slice(0, markerIndex);
+  const sourceName = relsPath.slice(markerIndex + marker.length, -".rels".length);
+  const sourcePath = ownerDir ? `${ownerDir}/${sourceName}` : sourceName;
+  const slashIndex = sourcePath.lastIndexOf("/");
+  return slashIndex === -1 ? "" : sourcePath.slice(0, slashIndex);
+};
+
+const resolveRelationshipTarget = (relsPath, target) => {
+  if (/^[a-z][a-z0-9+.-]*:/i.test(target) || target.startsWith("/")) {
+    return "";
+  }
+
+  const sourceDir = getRelationshipSourceDir(relsPath);
+  return normalizeZipPath(sourceDir ? `${sourceDir}/${target}` : target);
+};
+
+const buildRelativeZipPath = (fromDir, toPath) => {
+  const fromParts = normalizeZipPath(fromDir).split("/").filter(Boolean);
+  const toParts = normalizeZipPath(toPath).split("/").filter(Boolean);
+
+  while (fromParts.length > 0 && toParts.length > 0 && fromParts[0] === toParts[0]) {
+    fromParts.shift();
+    toParts.shift();
+  }
+
+  return [...fromParts.map(() => ".."), ...toParts].join("/");
+};
+
+const escapeXmlAttribute = (value) =>
+  value
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+
+const unescapeXmlAttribute = (value) =>
+  value
+    .replace(/&quot;/g, "\"")
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+
 const recompressImage = async (bytes, path, profile) => {
   if (!("createImageBitmap" in self) || !("OffscreenCanvas" in self)) {
     return null;
@@ -233,21 +393,48 @@ const recompressImage = async (bytes, path, profile) => {
   const width = Math.max(1, Math.round(bitmap.width * scale));
   const height = Math.max(1, Math.round(bitmap.height * scale));
 
-  const canvas = new OffscreenCanvas(width, height);
-  const context = canvas.getContext("2d", { alpha: false });
-  context.fillStyle = "#fff";
-  context.fillRect(0, 0, width, height);
-  context.drawImage(bitmap, 0, 0, width, height);
-  bitmap.close?.();
-
-  const imageData = context.getImageData(0, 0, width, height);
-
   // 3. Encode by strategy
-  if (isPng) {
-    // Strong: 直接转 JPEG，最小体积
-    if (settings.pngStrategy === "direct-jpeg") {
-      const { encode: encodeJpeg } = await import("@jsquash/jpeg");
-      const jpegBytes = await encodeJpeg(imageData, {
+  try {
+    if (isPng) {
+      // Strong: 直接转 JPEG，最小体积
+      if (settings.pngStrategy === "direct-jpeg") {
+        const encodeJpeg = await getJpegEncoder();
+        const jpegBytes = await encodeJpeg(getBitmapImageData(bitmap, width, height, true), {
+          quality: settings.quality,
+          progressive: true,
+          optimize_coding: true,
+          trellis_multipass: true,
+        });
+        return jpegBytes.byteLength < bytes.byteLength
+          ? { bytes: jpegBytes, converted: true }
+          : null;
+      }
+
+      // Balanced / Archive: 先尝试 OxiPNG 无损优化，保留透明通道
+      const pngImageData = getBitmapImageData(bitmap, width, height);
+      const optimisePng = await getOxipngEncoder();
+      const pngBytes = await optimisePng(pngImageData, {
+        level: 2,
+        interlace: false,
+        optimiseAlpha: true,
+      });
+
+      if (pngBytes.byteLength < bytes.byteLength) {
+        return { bytes: pngBytes, converted: false };
+      }
+
+      // Archive: 只保留无损优化，不转 JPEG
+      if (settings.pngStrategy === "oxipng-only") {
+        return null;
+      }
+
+      // Balanced: fallback 到 MozJPEG（仅当不含透明像素时）
+      if (hasTransparentPixels(pngImageData)) {
+        return null;
+      }
+
+      const encodeJpeg = await getJpegEncoder();
+      const jpegBytes = await encodeJpeg(getBitmapImageData(bitmap, width, height, true), {
         quality: settings.quality,
         progressive: true,
         optimize_coding: true,
@@ -258,96 +445,86 @@ const recompressImage = async (bytes, path, profile) => {
         : null;
     }
 
-    // Balanced / Archive: 先尝试 OxiPNG 无损优化
-    const { optimise: optimisePng } = await import("@jsquash/oxipng");
-    const pngBytes = await optimisePng(imageData, {
-      level: 2,
-      interlace: false,
-      optimiseAlpha: true,
-    });
-
-    if (pngBytes.byteLength < bytes.byteLength) {
-      return { bytes: pngBytes, converted: false };
-    }
-
-    // Archive: 只保留无损优化，不转 JPEG
-    if (settings.pngStrategy === "oxipng-only") {
-      return null;
-    }
-
-    // Balanced: fallback 到 MozJPEG
-    const { encode: encodeJpeg } = await import("@jsquash/jpeg");
-    const jpegBytes = await encodeJpeg(imageData, {
+    // JPEG re-encode with MozJPEG
+    const encodeJpeg = await getJpegEncoder();
+    const jpegBytes = await encodeJpeg(getBitmapImageData(bitmap, width, height, true), {
       quality: settings.quality,
       progressive: true,
       optimize_coding: true,
       trellis_multipass: true,
     });
     return jpegBytes.byteLength < bytes.byteLength
-      ? { bytes: jpegBytes, converted: true }
+      ? { bytes: jpegBytes, converted: false }
       : null;
+  } finally {
+    bitmap.close?.();
   }
-
-  // JPEG re-encode with MozJPEG
-  const { encode: encodeJpeg } = await import("@jsquash/jpeg");
-  const jpegBytes = await encodeJpeg(imageData, {
-    quality: settings.quality,
-    progressive: true,
-    optimize_coding: true,
-    trellis_multipass: true,
-  });
-  return jpegBytes.byteLength < bytes.byteLength
-    ? { bytes: jpegBytes, converted: false }
-    : null;
 };
 
 const replaceZipTextReferences = async (zip, fromPath, toPath) => {
-  const replacements = [
-    [fromPath, toPath],
-    [fromPath.split("/").pop(), toPath.split("/").pop()],
-  ];
   const textEntries = Object.values(zip.files).filter(
-    (entry) =>
-      !entry.dir &&
-      /\.(xml|rels)$/i.test(entry.name) &&
-      !/^(ppt|word)\/media\//i.test(entry.name)
+    (entry) => !entry.dir && /\.rels$/i.test(entry.name)
   );
 
-  await Promise.all(
-    textEntries.map(async (entry) => {
-      const original = await entry.async("string");
-      let updated = original;
+  for (const entry of textEntries) {
+    const original = await entry.async("string");
+    const sourceDir = getRelationshipSourceDir(entry.name);
+    const updated = original.replace(
+      /\bTarget=(["'])([^"']+)\1/g,
+      (match, quote, target) => {
+        if (resolveRelationshipTarget(entry.name, unescapeXmlAttribute(target)) !== normalizeZipPath(fromPath)) {
+          return match;
+        }
 
-      const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-      replacements.forEach(([from, to]) => {
-        const re = new RegExp(escapeRegExp(from) + "\\b", "g");
-        updated = updated.replace(re, to);
-      });
-
-      if (updated !== original) {
-        zip.file(entry.name, updated);
+        const relativeTarget = buildRelativeZipPath(sourceDir, toPath);
+        return `Target=${quote}${escapeXmlAttribute(relativeTarget)}${quote}`;
       }
-    })
-  );
+    );
+
+    if (updated !== original) {
+      zip.file(entry.name, updated);
+    }
+  }
 };
 
-const ensureJpegContentType = async (zip) => {
+const removeContentTypeOverrides = (xml, removedPaths) => {
+  const removedPartPaths = new Set(removedPaths.map((path) => normalizeZipPath(path)));
+
+  if (removedPartPaths.size === 0) {
+    return xml;
+  }
+
+  return xml.replace(/<Override\b[^>]*>(?:\s*<\/Override>)?/gi, (tag) => {
+    const partNameMatch = tag.match(/\bPartName=(["'])([^"']+)\1/i);
+
+    if (!partNameMatch) {
+      return tag;
+    }
+
+    const partPath = normalizeZipPath(unescapeXmlAttribute(partNameMatch[2]).replace(/^\/+/, ""));
+    return removedPartPaths.has(partPath) ? "" : tag;
+  });
+};
+
+const ensureJpegContentType = async (zip, removedPaths = []) => {
   const contentTypes = zip.file("[Content_Types].xml");
   if (!contentTypes) {
     return;
   }
 
   const original = await contentTypes.async("string");
-  if (/Extension="jpe?g"/i.test(original)) {
-    return;
+  let updated = removeContentTypeOverrides(original, removedPaths);
+
+  if (!/Extension="jpg"/i.test(updated)) {
+    updated = updated.replace(
+      "</Types>",
+      '<Default Extension="jpg" ContentType="image/jpeg"/></Types>'
+    );
   }
 
-  const updated = original.replace(
-    "</Types>",
-    '<Default Extension="jpg" ContentType="image/jpeg"/></Types>'
-  );
-  zip.file("[Content_Types].xml", updated);
+  if (updated !== original) {
+    zip.file("[Content_Types].xml", updated);
+  }
 };
 
 const compressOffice = async ({ id, name, buffer, profile, kind }) => {
@@ -357,6 +534,7 @@ const compressOffice = async ({ id, name, buffer, profile, kind }) => {
   );
   let optimizedImages = 0;
   let hasPngToJpeg = false;
+  const removedImagePaths = [];
 
   for (const entry of imageEntries) {
     try {
@@ -374,18 +552,19 @@ const compressOffice = async ({ id, name, buffer, profile, kind }) => {
           zip.remove(entry.name);
           await replaceZipTextReferences(zip, entry.name, newPath);
           hasPngToJpeg = true;
+          removedImagePaths.push(entry.name);
         }
         optimizedImages += 1;
       }
     } catch (error) {
-      activeLogs?.push(
+      currentLogCollector?.push(
         `${entry.name}: ${error instanceof Error ? error.message : "图片重压缩失败"}`
       );
     }
   }
 
   if (hasPngToJpeg) {
-    await ensureJpegContentType(zip);
+    await ensureJpegContentType(zip, removedImagePaths);
   }
 
   const output = await zip.generateAsync({
@@ -394,13 +573,18 @@ const compressOffice = async ({ id, name, buffer, profile, kind }) => {
     compressionOptions: { level: 9 },
   });
 
+  const outputBuffer = output.byteLength < buffer.byteLength
+    ? toTransferableBuffer(output)
+    : buffer;
+
   return {
     ok: true,
     id,
-    buffer: toTransferableBuffer(output),
+    buffer: outputBuffer,
     outputName: buildOfficeOutputName(name, profile, kind),
-    message:
-      optimizedImages > 0
+    message: outputBuffer === buffer
+      ? "压缩后文件未变小，已返回原文件。"
+      : optimizedImages > 0
         ? `${kind.toUpperCase()} 压缩完成，已重压缩 ${optimizedImages}/${imageEntries.length} 张图片。`
         : `${kind.toUpperCase()} 已重新打包，${imageEntries.length} 张图片未产生更小版本。`,
   };
@@ -412,7 +596,16 @@ self.addEventListener("message", async (event) => {
   if (message.type === "probe-engine") {
     try {
       await getModule();
-      postEngineStatus(true, "Ghostscript WASM 已就绪");
+      let qpdfReady = false;
+      let statusMessage = "Ghostscript WASM 已就绪";
+      try {
+        await getQpdfModule();
+        qpdfReady = true;
+        statusMessage = "Ghostscript 与 QPDF 均已就绪";
+      } catch {
+        statusMessage = "Ghostscript 已就绪，QPDF 结构优化不可用";
+      }
+      postEngineStatus(true, statusMessage, false, qpdfReady);
     } catch (error) {
       postEngineStatus(
         false,
@@ -433,7 +626,8 @@ self.addEventListener("message", async (event) => {
   }
 
   try {
-    activeLogs = [];
+    const logs = [];
+    setLogCollector(logs);
     const result =
       message.type === "compress-office" ? await compressOffice(message) : await compressPdf(message);
     port.postMessage(result, result.ok ? [result.buffer] : []);
@@ -444,6 +638,6 @@ self.addEventListener("message", async (event) => {
       error: error instanceof Error ? error.message : "压缩 Worker 执行失败。",
     });
   } finally {
-    activeLogs = null;
+    setLogCollector(null);
   }
 });
