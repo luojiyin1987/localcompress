@@ -99,7 +99,6 @@ const createItem = (file) => ({
   statusLabel: "待处理",
   tone: "",
   message: "已加入队列，等待开始。",
-  downloadUrl: "",
   outputBlob: null,
   outputName: "",
   resultBytes: 0,
@@ -107,15 +106,7 @@ const createItem = (file) => ({
 
 const getItemById = (id) => state.files.find((item) => item.id === id);
 
-const revokeDownload = (item) => {
-  if (item.downloadUrl) {
-    URL.revokeObjectURL(item.downloadUrl);
-    item.downloadUrl = "";
-  }
-};
-
 const clearOutput = (item) => {
-  revokeDownload(item);
   item.outputBlob = null;
   item.outputName = "";
   item.resultBytes = 0;
@@ -124,7 +115,6 @@ const clearOutput = (item) => {
 const createClearedResultPatch = () => ({
   resultBytes: 0,
   outputName: "",
-  downloadUrl: "",
   outputBlob: null,
 });
 
@@ -157,14 +147,12 @@ const fallbackDownload = (blob, filename) => {
   document.body.append(anchor);
   anchor.click();
   anchor.remove();
-  return downloadUrl;
+  setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
 };
 
 const saveBlob = async (item) => {
-  revokeDownload(item);
-
   if (!("showSaveFilePicker" in window)) {
-    item.downloadUrl = fallbackDownload(item.outputBlob, item.outputName);
+    fallbackDownload(item.outputBlob, item.outputName);
     return;
   }
 
@@ -401,7 +389,16 @@ const markItemPreparing = (item, profile, optimizeStructure, currentIndex, total
   });
 };
 
+const isBinaryOutput = (value) => {
+  return value instanceof ArrayBuffer || ArrayBuffer.isView(value);
+};
+
 const markItemSuccess = (item, result) => {
+  if (!isBinaryOutput(result.buffer)) {
+    markItem(item.id, createFailedItemPatch("压缩结果无效，未收到可保存的输出文件。"));
+    return;
+  }
+
   const blob = new Blob([result.buffer], {
     type: getKindConfig(item.kind)?.mime ?? fileKinds.pdf.mime,
   });
@@ -577,16 +574,11 @@ function handleWorkerMessageError() {
   restartWorker("Worker 消息通道错误，压缩引擎已重启。");
 }
 
-const cleanupDownloads = () => {
-  state.files.forEach((item) => revokeDownload(item));
-};
-
 const init = () => {
   bindDropzoneEvents();
   bindFileInputEvents();
   compressButton.addEventListener("click", handleCompressClick);
   fileList.addEventListener("click", handleDownloadClick);
-  window.addEventListener("beforeunload", cleanupDownloads);
 
   worker = createWorker();
   probeWorker();
