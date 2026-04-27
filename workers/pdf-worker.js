@@ -9,14 +9,16 @@ const createLazyImport = (loader, exportName) => {
 
   return async () => {
     if (!modulePromise) {
-      modulePromise = loader().catch((error) => {
-        modulePromise = null;
-        throw error;
-      });
+      modulePromise = loader();
     }
 
-    const module = await modulePromise;
-    return module[exportName];
+    try {
+      const module = await modulePromise;
+      return module[exportName];
+    } catch (error) {
+      modulePromise = null;
+      throw error;
+    }
   };
 };
 
